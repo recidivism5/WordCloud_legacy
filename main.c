@@ -1317,7 +1317,7 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	x = 0; y = 0; gy = 0;
 	for (WCHAR c = ' '; c <= '~'; c++){
 		RECT r = {0};
-		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT);
+		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT|DT_NOPREFIX); // DT_NOPREFIX is required to prevent '&' from being treated as an underline prefix flag: https://stackoverflow.com/questions/20181949/how-to-stop-drawtext-from-underlining-alt-characters
 		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
 		if ((x + r.right-r.left) >= img.width){
 			y = gy;
@@ -1349,7 +1349,7 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	x = 0; y = 0; gy = 0;
 	for (WCHAR c = ' '; c <= '~'; c++){
 		RECT r = {0};
-		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT);
+		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT|DT_NOPREFIX);
 		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
 		if ((x + r.right-r.left) >= img.width){
 			y = gy;
@@ -1849,7 +1849,7 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	DarkGLMakeWindow(RID_ICON,L"DarkViewer",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
 	//GenCachedFont(&font,L"Consolas",12);
-	TestFont(&texture,L"Consolas",12);
+	TestFont(&texture,L"Consolas",24);
 
 	GetModuleFileNameW(0,exePath,COUNT(exePath));
 	int argc;
