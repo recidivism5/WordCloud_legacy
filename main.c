@@ -1270,22 +1270,7 @@ void GenCachedFont(CachedFont *f, WCHAR *name, int height){
 	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
 	HDC hdcScreen = GetDC(NULL);
 	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
-	HBITMAP hbm = CreateCompatibleBitmap(hdcScreen,256,256);
-	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
-
-	RECT r = {0, 0, 256, 256};
-	FillRect(hdcBmp,&r,GetStockObject(WHITE_BRUSH));
-
-	BITMAPINFO bmi = {0};
-	bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-	GetDIBits(hdcBmp,hbm,0,0,NULL,&bmi,DIB_RGB_COLORS);
-	printf("bmi.bmWidth: %d bitcount: %d bits: %p\n",bmi.bmiHeader.biWidth,bmi.bmiHeader.biBitCount);
-
-	SelectObject(hdcBmp,hbmOld);
-	DeleteDC(hdcBmp);
-	ReleaseDC(NULL,hdcScreen);
-
-	/*BITMAPINFO_TRUECOLOR32 bmi = {0};
+	BITMAPINFO_TRUECOLOR32 bmi = {0};
 	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 	bmi.bmiHeader.biWidth = 256;
 	bmi.bmiHeader.biHeight = -256;
@@ -1294,7 +1279,66 @@ void GenCachedFont(CachedFont *f, WCHAR *name, int height){
 	bmi.bmiHeader.biBitCount = 32;
 	bmi.bmiColors[0].rgbRed = 0xff;
 	bmi.bmiColors[1].rgbGreen = 0xff;
-	bmi.bmiColors[2].rgbBlue = 0xff;*/
+	bmi.bmiColors[2].rgbBlue = 0xff;
+	uint32_t *bits;
+	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&bits,0,0);
+	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
+	HFONT oldFont = SelectObject(hdcBmp,hfont);
+
+	RECT r = {0, 0, 256, 256};
+	//FillRect(hdcBmp,&r,GetStockObject(WHITE_BRUSH));
+	DrawTextW(hdcBmp,L"fuck",4,&r,DT_SINGLELINE|DT_CENTER|DT_VCENTER);
+
+	SelectObject(hdcBmp,oldFont);
+	DeleteObject(hfont);
+	SelectObject(hdcBmp,hbmOld);
+	DeleteDC(hdcBmp);
+	ReleaseDC(NULL,hdcScreen);
+}
+void TestFont(Texture *t, WCHAR *name, int height){
+	HFONT hfont = CreateFontW(-height,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FF_DONTCARE,name);
+
+	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
+	HDC hdcScreen = GetDC(NULL);
+	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
+	BITMAPINFO_TRUECOLOR32 bmi = {0};
+	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth = 256;
+	bmi.bmiHeader.biHeight = 256;
+	bmi.bmiHeader.biPlanes = 1;
+	bmi.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS;
+	bmi.bmiHeader.biBitCount = 32;
+	bmi.bmiColors[0].rgbRed = 0xff;
+	bmi.bmiColors[1].rgbGreen = 0xff;
+	bmi.bmiColors[2].rgbBlue = 0xff;
+	uint32_t *bits;
+	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&bits,0,0);
+	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
+	HFONT oldFont = SelectObject(hdcBmp,hfont);
+
+	RECT r = {0, 0, 256, 256};
+	//FillRect(hdcBmp,&r,GetStockObject(BLACK_BRUSH));
+	SetBkMode(hdcBmp,TRANSPARENT);
+	SetTextColor(hdcBmp,RGB(255,255,255));
+	DrawTextW(hdcBmp,L"fuck how does it look",21,&r,DT_SINGLELINE|DT_CENTER|DT_VCENTER);
+
+	SelectObject(hdcBmp,oldFont);
+	DeleteObject(hfont);
+	SelectObject(hdcBmp,hbmOld);
+	DeleteDC(hdcBmp);
+	ReleaseDC(NULL,hdcScreen);
+
+	for (size_t i = 0; i < 256*256; i++){
+		uint8_t *p = bits+i;
+		uint8_t s;
+		SWAP(s,p[0],p[2]);
+		p[3] = max(p[0],max(p[1],p[2]));
+	}
+	Image img;
+	img.width = 256;
+	img.height = 256;
+	img.pixels = bits;
+	TextureFromImage(t,&img,false);
 }
 
 #include <intrin.h>
@@ -1770,7 +1814,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 
 	DarkGLMakeWindow(RID_ICON,L"DarkViewer",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
-	GenCachedFont(&font,L"Consolas",12);
+	//GenCachedFont(&font,L"Consolas",12);
+	TestFont(&texture,L"Consolas",12);
 
 	GetModuleFileNameW(0,exePath,COUNT(exePath));
 	int argc;
