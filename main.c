@@ -1301,26 +1301,64 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
 	HDC hdcScreen = GetDC(NULL);
 	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
+
+	/*
+	Chars will not have perfect packing, so we cannot trust total char area < total texture area as assurance that all chars will fit.
+	Instead we have to iterate through the chars and increase our texture size if we run out of room, repeat until we no longer run out of room.
+	*/
+	HFONT oldFont = SelectObject(hdcBmp,hfont);
+	SetBkMode(hdcBmp,TRANSPARENT);
+	SetTextColor(hdcBmp,RGB(255,255,255));
+	Image img;
+	img.width = 64;
+	img.height = 64;
+	int x,y,gy;
+	L0:
+	x = 0; y = 0; gy = 0;
+	for (WCHAR c = ' '; c <= '~'; c++){
+		RECT r = {0};
+		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT);
+		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
+		if ((x + r.right-r.left) >= img.width){
+			y = gy;
+			if ((y + r.bottom-r.top) >= img.height){
+				img.width *= 2;
+				img.height *= 2;
+				goto L0;
+			}
+			gy = y+r.bottom-r.top;
+			x = 0;
+		}
+		x += r.right-r.left;
+	}
+	printf("dims: %d %d\n",img.width,img.height);
+
 	BITMAPINFO_TRUECOLOR32 bmi = {0};
 	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bmi.bmiHeader.biWidth = 256;
-	bmi.bmiHeader.biHeight = 256;
+	bmi.bmiHeader.biWidth = img.width;
+	bmi.bmiHeader.biHeight = img.height;
 	bmi.bmiHeader.biPlanes = 1;
 	bmi.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS;
 	bmi.bmiHeader.biBitCount = 32;
 	bmi.bmiColors[0].rgbRed = 0xff;
 	bmi.bmiColors[1].rgbGreen = 0xff;
 	bmi.bmiColors[2].rgbBlue = 0xff;
-	uint32_t *bits;
-	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&bits,0,0);
+	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&img.pixels,0,0);
 	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
-	HFONT oldFont = SelectObject(hdcBmp,hfont);
 
-	RECT r = {0, 0, 256, 256};
-	//FillRect(hdcBmp,&r,GetStockObject(BLACK_BRUSH));
-	SetBkMode(hdcBmp,TRANSPARENT);
-	SetTextColor(hdcBmp,RGB(255,255,255));
-	DrawTextW(hdcBmp,L"fuck how does it look",21,&r,DT_SINGLELINE|DT_CENTER|DT_VCENTER);
+	x = 0; y = 0; gy = 0;
+	for (WCHAR c = ' '; c <= '~'; c++){
+		RECT r = {0};
+		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT);
+		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
+		if ((x + r.right-r.left) >= img.width){
+			y = gy;
+			gy = y+r.bottom-r.top;
+			x = 0;
+		}
+		ExtTextOutW(hdcBmp,x,y,0,0,&c,1,0);
+		x += r.right-r.left;
+	}
 
 	SelectObject(hdcBmp,oldFont);
 	DeleteObject(hfont);
@@ -1328,16 +1366,12 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	DeleteDC(hdcBmp);
 	ReleaseDC(NULL,hdcScreen);
 
-	for (size_t i = 0; i < 256*256; i++){
-		uint8_t *p = bits+i;
+	for (size_t i = 0; i < img.width*img.height; i++){
+		uint8_t *p = img.pixels+i;
 		uint8_t s;
 		SWAP(s,p[0],p[2]);
 		p[3] = max(p[0],max(p[1],p[2]));
 	}
-	Image img;
-	img.width = 256;
-	img.height = 256;
-	img.pixels = bits;
 	TextureFromImage(t,&img,false);
 }
 
