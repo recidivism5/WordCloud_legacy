@@ -1331,7 +1331,6 @@ void TestFont(Texture *t, WCHAR *name, int height){
 		}
 		x += r.right-r.left;
 	}
-	printf("dims: %d %d\n",img.width,img.height);
 
 	BITMAPINFO_TRUECOLOR32 bmi = {0};
 	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -1373,6 +1372,7 @@ void TestFont(Texture *t, WCHAR *name, int height){
 		p[3] = max(p[0],max(p[1],p[2]));
 	}
 	TextureFromImage(t,&img,false);
+	DeleteObject(hbm);
 }
 
 #include <intrin.h>
