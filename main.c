@@ -84,6 +84,22 @@ void FatalErrorW(WCHAR *format, ...){
 	exit(1);
 }
 
+void *MallocOrDie(size_t size){
+	void *p = malloc(size);
+	if (!p) FatalErrorA("malloc failed.");
+	return p;
+}
+void *ZallocOrDie(size_t size){
+	void *p = calloc(1,size);
+	if (!p) FatalErrorA("calloc failed.");
+	return p;
+}
+void *ReallocOrDie(void *ptr, size_t size){
+	void *p = realloc(ptr,size);
+	if (!p) FatalErrorA("realloc failed.");
+	return p;
+}
+
 /*
 randint
 From: https://stackoverflow.com/a/822361
@@ -125,7 +141,7 @@ type *type##ListMakeRoom(type ## List *list, size_t count){\
 	if (list->used+count > list->total){\
 		if (!list->total) list->total = 1;\
 		while (list->used+count > list->total) list->total *= 2;\
-		list->elements = realloc(list->elements,list->total*sizeof(type));\
+		list->elements = ReallocOrDie(list->elements,list->total*sizeof(type));\
 	}\
 	return list->elements+list->used;\
 }\
@@ -191,13 +207,13 @@ type *type##LinkedHashListGet(type##LinkedHashList *list, size_t keylen, char *k
 type *type##LinkedHashListNew(type##LinkedHashList *list, size_t keylen, char *key){\
 	if (!list->total){\
 		list->total = 8;\
-		list->buckets = calloc(8,sizeof(*list->buckets));\
+		list->buckets = ZallocOrDie(8*sizeof(*list->buckets));\
 	}\
 	if (list->used+1 > (list->total*3)/4){\
 		type##LinkedHashList newList;\
 		newList.total = list->total * 2;\
 		newList.used = list->used;\
-		newList.buckets = calloc(newList.total,sizeof(*newList.buckets));\
+		newList.buckets = ZallocOrDie(newList.total*sizeof(*newList.buckets));\
 		for (type##LinkedHashListBucket *bucket = list->first; bucket;){\
 			type##LinkedHashListBucket *newBucket = type##LinkedHashListGetBucket(&newList,bucket->keylen,bucket->key);\
 			newBucket->keylen = bucket->keylen;\
@@ -841,7 +857,7 @@ char *LoadFileA(char *path, size_t *size){
 	fseek(f,0,SEEK_END);
 	*size = ftell(f);
 	fseek(f,0,SEEK_SET);
-	char *buf = malloc(*size);
+	char *buf = MallocOrDie(*size);
 	fread(buf,*size,1,f);
 	fclose(f);
 	return buf;
@@ -852,7 +868,7 @@ char *LoadFileW(WCHAR *path, size_t *size){
 	fseek(f,0,SEEK_END);
 	*size = ftell(f);
 	fseek(f,0,SEEK_SET);
-	char *buf = malloc(*size);
+	char *buf = MallocOrDie(*size);
 	fread(buf,*size,1,f);
 	fclose(f);
 	return buf;
@@ -885,7 +901,7 @@ void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 	convertedSrc->lpVtbl->GetSize(convertedSrc,&img->width,&img->height);
 	uint32_t size = img->width*img->height*sizeof(uint32_t);
 	img->rowPitch = img->width*sizeof(uint32_t);
-	img->pixels = malloc(size);
+	img->pixels = MallocOrDie(size);
 	if (flip){
 		IWICBitmapFlipRotator *pFlipRotator;
 		ifactory->lpVtbl->CreateBitmapFlipRotator(ifactory,&pFlipRotator);
@@ -1257,45 +1273,14 @@ void CompileShaders(){
 }
 typedef struct {
 	Texture texture;
-	int charBoxes[95][4]; //x,y,width,height
+	int charDims[95][2]; //width,height
 	float uvs[95][4][2]; //corners
 } CachedFont;
 typedef struct {
 	BITMAPINFOHEADER    bmiHeader;
-	RGBQUAD             bmiColors[3];
+	RGBQUAD             bmiColors[4];
 } BITMAPINFO_TRUECOLOR32;
-void GenCachedFont(CachedFont *f, WCHAR *name, int height){
-	HFONT hfont = CreateFontW(-height,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FF_DONTCARE,name);
-	
-	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
-	HDC hdcScreen = GetDC(NULL);
-	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
-	BITMAPINFO_TRUECOLOR32 bmi = {0};
-	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bmi.bmiHeader.biWidth = 256;
-	bmi.bmiHeader.biHeight = -256;
-	bmi.bmiHeader.biPlanes = 1;
-	bmi.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS;
-	bmi.bmiHeader.biBitCount = 32;
-	bmi.bmiColors[0].rgbRed = 0xff;
-	bmi.bmiColors[1].rgbGreen = 0xff;
-	bmi.bmiColors[2].rgbBlue = 0xff;
-	uint32_t *bits;
-	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&bits,0,0);
-	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
-	HFONT oldFont = SelectObject(hdcBmp,hfont);
-
-	RECT r = {0, 0, 256, 256};
-	//FillRect(hdcBmp,&r,GetStockObject(WHITE_BRUSH));
-	DrawTextW(hdcBmp,L"fuck",4,&r,DT_SINGLELINE|DT_CENTER|DT_VCENTER);
-
-	SelectObject(hdcBmp,oldFont);
-	DeleteObject(hfont);
-	SelectObject(hdcBmp,hbmOld);
-	DeleteDC(hdcBmp);
-	ReleaseDC(NULL,hdcScreen);
-}
-void TestFont(Texture *t, WCHAR *name, int height){
+void GenCachedFont(CachedFont *cf, WCHAR *name, int height){
 	HFONT hfont = CreateFontW(-height,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FF_DONTCARE,name);
 
 	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
@@ -1318,18 +1303,18 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	for (WCHAR c = ' '; c <= '~'; c++){
 		RECT r = {0};
 		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT|DT_NOPREFIX); // DT_NOPREFIX is required to prevent '&' from being treated as an underline prefix flag: https://stackoverflow.com/questions/20181949/how-to-stop-drawtext-from-underlining-alt-characters
-		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
-		if ((x + r.right-r.left) >= img.width){
+		if ((y + r.bottom) > gy) gy = y+r.bottom;
+		if ((x + r.right) >= img.width){
 			y = gy;
-			if ((y + r.bottom-r.top) >= img.height){
+			if ((y + r.bottom) >= img.height){
 				img.width *= 2;
 				img.height *= 2;
 				goto L0;
 			}
-			gy = y+r.bottom-r.top;
+			gy = y+r.bottom;
 			x = 0;
 		}
-		x += r.right-r.left;
+		x += r.right;
 	}
 
 	BITMAPINFO_TRUECOLOR32 bmi = {0};
@@ -1349,14 +1334,24 @@ void TestFont(Texture *t, WCHAR *name, int height){
 	for (WCHAR c = ' '; c <= '~'; c++){
 		RECT r = {0};
 		DrawTextW(hdcBmp,&c,1,&r,DT_CALCRECT|DT_NOPREFIX);
-		if ((y + r.bottom-r.top) > gy) gy = y+r.bottom-r.top;
-		if ((x + r.right-r.left) >= img.width){
+		if ((y + r.bottom) > gy) gy = y+r.bottom;
+		if ((x + r.right) >= img.width){
 			y = gy;
-			gy = y+r.bottom-r.top;
+			gy = y+r.bottom;
 			x = 0;
 		}
 		ExtTextOutW(hdcBmp,x,y,0,0,&c,1,0);
-		x += r.right-r.left;
+		cf->charDims[c-' '][0] = r.right;
+		cf->charDims[c-' '][1] = r.bottom;
+		cf->uvs[c-' '][0][0] = (float) x / img.width;
+		cf->uvs[c-' '][0][1] = (float) (img.height - 1 - y) / img.height;
+		cf->uvs[c-' '][1][0] = cf->uvs[c-' '][0][0];
+		cf->uvs[c-' '][1][1] = (float) (img.height - 1 - (y+r.bottom)) / img.height;
+		cf->uvs[c-' '][2][0] = (float) (x + r.right) / img.width;
+		cf->uvs[c-' '][2][1] = cf->uvs[c-' '][1][1];
+		cf->uvs[c-' '][3][0] = cf->uvs[c-' '][2][0];
+		cf->uvs[c-' '][3][1] = cf->uvs[c-' '][0][1];
+		x += r.right;
 	}
 
 	SelectObject(hdcBmp,oldFont);
@@ -1371,8 +1366,45 @@ void TestFont(Texture *t, WCHAR *name, int height){
 		SWAP(s,p[0],p[2]);
 		p[3] = max(p[0],max(p[1],p[2]));
 	}
-	TextureFromImage(t,&img,false);
+	TextureFromImage(&cf->texture,&img,false);
 	DeleteObject(hbm);
+}
+LIST_IMPLEMENTATION(TextureVertex)
+void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, size_t charCount, int x, int y, int z){
+	for (size_t i = 0; i < charCount; i++){
+		TextureVertex *v = TextureVertexListMakeRoom(list,6);
+
+		v[0].Position[0] = x;
+		v[0].Position[1] = y + f->charDims[s[i]-' '][1];
+		v[0].Position[2] = z;
+		v[0].Texcoord[0] = f->uvs[s[i]-' '][0][0];
+		v[0].Texcoord[1] = f->uvs[s[i]-' '][0][1];
+
+		v[1].Position[0] = x;
+		v[1].Position[1] = y;
+		v[1].Position[2] = z;
+		v[1].Texcoord[0] = f->uvs[s[i]-' '][1][0];
+		v[1].Texcoord[1] = f->uvs[s[i]-' '][1][1];
+
+		v[2].Position[0] = x + f->charDims[s[i]-' '][0];
+		v[2].Position[1] = y;
+		v[2].Position[2] = z;
+		v[2].Texcoord[0] = f->uvs[s[i]-' '][2][0];
+		v[2].Texcoord[1] = f->uvs[s[i]-' '][2][1];
+
+		v[3] = v[2];
+
+		v[4].Position[0] = v[2].Position[0];
+		v[4].Position[1] = v[0].Position[1];
+		v[4].Position[2] = z;
+		v[4].Texcoord[0] = f->uvs[s[i]-' '][3][0];
+		v[4].Texcoord[1] = f->uvs[s[i]-' '][3][1];
+
+		v[5] = v[0];
+
+		list->used += 6;
+		x += f->charDims[s[i]-' '][0];
+	}
 }
 
 #include <intrin.h>
@@ -1626,7 +1658,7 @@ void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
 			size_t len = wcslen(fd.cFileName);
 			if (len > 4 && (!wcscmp(fd.cFileName+len-4,L".jpg") || !wcscmp(fd.cFileName+len-4,L".png"))){
 				LPWSTR *s = LPWSTRListMakeRoom(list,1);
-				*s = malloc((len+1)*sizeof(WCHAR));
+				*s = MallocOrDie((len+1)*sizeof(WCHAR));
 				wcscpy(*s,fd.cFileName);
 			}
 		}
@@ -1656,6 +1688,32 @@ void LoadImg(WCHAR *path){
 	}
 }
 
+enum Anchor {
+	ANCHOR_BOTTOMLEFT,
+	ANCHOR_BOTTOMRIGHT,
+	ANCHOR_TOPLEFT,
+	ANCHOR_TOPRIGHT,
+	ANCHOR_CENTER
+};
+typedef struct {
+	int x, y, width, height, roundingRadius;
+	uint32_t color;
+	bool centered;
+	enum Anchor anchor;
+	WCHAR *string;
+	void (*func)(void);
+} Button;
+Button testButton = {
+	.x = 0,
+	.y = 0,
+	.width = 100,
+	.height = 30,
+	.roundingRadius = 15,
+	.centered = true,
+	.anchor = ANCHOR_CENTER,
+	.string = L"test",
+	.func = 0
+};
 bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
 }
@@ -1811,6 +1869,17 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			TextureShaderPrepBuffer();
 			glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
 
+			TextureVertexList tvl = {0};
+			AppendStringMesh(&tvl,&font,L"test picklmlstone",17,clientWidth/2,clientHeight/2-200,0);
+			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
+			GLuint buf;
+			glGenBuffers(1,&buf);
+			glBindBuffer(GL_ARRAY_BUFFER,buf);
+			glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
+			TextureShaderPrepBuffer();
+			glDrawArrays(GL_TRIANGLES,0,tvl.used);
+			glDeleteBuffers(1,&buf);
+
 			/*ListHeader *verts;
 			glUseProgram(RoundedRectangleShader.id);
 			glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho.arr);
@@ -1848,8 +1917,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 
 	DarkGLMakeWindow(RID_ICON,L"DarkViewer",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
-	//GenCachedFont(&font,L"Consolas",12);
-	TestFont(&texture,L"Consolas",24);
+	GenCachedFont(&font,L"Consolas",24);
+	texture = font.texture;
 
 	GetModuleFileNameW(0,exePath,COUNT(exePath));
 	int argc;
