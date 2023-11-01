@@ -1303,7 +1303,7 @@ typedef struct {
 	RGBQUAD             bmiColors[4];
 } BITMAPINFO_TRUECOLOR32;
 void GenCachedFont(CachedFont *cf, WCHAR *name, int height){
-	HFONT hfont = CreateFontW(-height,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FF_DONTCARE,name);
+	HFONT hfont = CreateFontW(-height,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,name);
 
 	// https://gamedev.net/forums/topic/617849-win32-draw-to-bitmap/4898762/
 	HDC hdcScreen = GetDC(NULL);
@@ -1726,8 +1726,30 @@ typedef struct {
 	WCHAR *string;
 	void (*func)(void);
 } Button;
+void OpenImage(){
+	IFileDialog *pfd;
+	IShellItem *psi;
+	PWSTR path = 0;
+	COMDLG_FILTERSPEC fs = {L"Image files", L"*.png;*.jpg;*.jpeg"};
+	if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog,0,CLSCTX_INPROC_SERVER,&IID_IFileOpenDialog,&pfd))){
+		pfd->lpVtbl->SetFileTypes(pfd,1,&fs); 
+		pfd->lpVtbl->SetTitle(pfd,L"Open Image");
+		pfd->lpVtbl->Show(pfd,gwnd);
+		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
+			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
+				TextureFromFile(&texture,path,interpolation);
+				InvalidateRect(gwnd,0,0);
+				CoTaskMemFree(path);
+			}
+			psi->lpVtbl->Release(psi);
+		}
+		pfd->lpVtbl->Release(pfd);
+	}
+}
 Button buttons[] = {
-	{104,-40,80,20,20,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"test",0}
+	//0x7B9944 | (RR_DISH<<24)
+	{50,-16,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
+	{50,-16-28,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",0},
 };
 bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
@@ -1763,14 +1785,25 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			pos[1] = originalPos[1] + (y - panPoint.y);
 			InvalidateRect(hwnd,0,0);
 		}
-		if (PointInButton(20,workspaceHeight/2,10,25,x,y) || PointInButton(clientWidth-20,workspaceHeight/2,10,25,x,y) || PointInButton(4+50,clientHeight-16,50,10,x,y)){
-			SetCursor(cursorFinger);
-		} else SetCursor(scale == 1 ? cursorArrow : cursorPan);
+		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+			if (PointInButton(b->x,clientHeight-1+b->y,b->halfWidth,b->halfHeight,x,y)){
+				SetCursor(cursorFinger);
+				return 0;
+			}
+		}
+		SetCursor(scale == 1 ? cursorArrow : cursorPan);
 		return 0;
 	}
 	case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:{
 		int x = GET_X_LPARAM(lParam);
 		int y = clientHeight - GET_Y_LPARAM(lParam) - 1;
+		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+			if (PointInButton(b->x,clientHeight-1+b->y,b->halfWidth,b->halfHeight,x,y)){
+				b->func();
+				return 0;
+			}
+		}
+		/*
 		if (PointInButton(20,workspaceHeight/2,10,25,x,y)){
 			if (imageIndex > 0){
 				imageIndex--;
@@ -1798,7 +1831,7 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			panPoint.y = y;
 			memcpy(originalPos,pos,sizeof(pos));
 			pan = true;
-		}
+		}*/
 		return 0;
 	}
 	case WM_DROPFILES:{
@@ -1858,25 +1891,6 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 		if (texture.id){
-
-			GLuint buf;
-			glGenBuffers(1,&buf);
-			glBindBuffer(GL_ARRAY_BUFFER,buf);
-
-			glUseProgram(RoundedRectangleShader.id);
-			glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho);
-			RoundedRectangleVertexList rrv = {0};
-			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
-				AppendRoundedRectangle(&rrv,b->x,clientHeight-1+b->y,0,b->halfWidth,b->halfHeight,b->roundingRadius,b->color,b->IconColor);
-			}
-			//AppendRoundedRectangle(&rrv,20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_REVERSE_PLAY));
-			//AppendRoundedRectangle(&rrv,clientWidth-20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_PLAY));
-			//AppendRoundedRectangle(&rrv,4+50,clientHeight-16,0,50,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE));
-			glBufferData(GL_ARRAY_BUFFER,rrv.used*sizeof(*rrv.elements),rrv.elements,GL_STATIC_DRAW);
-			RoundedRectangleShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,rrv.used);
-			LIST_FREE(&rrv);
-
 			glUseProgram(TextureShader.id);
 			glUniform1i(TextureShader.uTex,0);
 			glBindTexture(GL_TEXTURE_2D,texture.id);
@@ -1901,30 +1915,37 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,mata);
 			glBindBuffer(GL_ARRAY_BUFFER,imageQuad.vertexBuffer);
 			TextureShaderPrepBuffer();
-			//glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
-
-			TextureVertexList tvl = {0};
-			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
-				AppendCenteredStringMesh(&tvl,&font,b->string,wcslen(b->string),b->x,clientHeight-1+b->y,1);
-			}
-			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
-			glBindBuffer(GL_ARRAY_BUFFER,buf);
-			glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
-			TextureShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,tvl.used);
-			LIST_FREE(&tvl);
-
-			/*glUseProgram(ColorShader.id);
-			glUniformMatrix4fv(ColorShader.proj,1,GL_FALSE,ortho.arr);
-			ListInit(&verts,sizeof(ColorVertex),0);
-			AppendFormatStringMesh(&verts,&font,10,clientHeight-20,1,12,RGBA(255,255,255,255),L"Interpolation: %s",interpolation ? L"On" : L"Off");
-			AppendFormatStringMesh(&verts,&font,120,clientHeight-20,1,12,RGBA(255,255,255,255),L"Scale: %d",scale);
-			AppendFormatStringMesh(&verts,&font,180,clientHeight-20,1,12,RGBA(255,255,255,255),L"Image %d of %d in folder.",imageIndex+1,images->used);
-			DrawTriangles(verts,ColorShaderPrepBuffer,false);
-			free(verts);*/
-
-			glDeleteBuffers(1,&buf);
+			glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
 		}
+
+		glUseProgram(RoundedRectangleShader.id);
+		glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho);
+		RoundedRectangleVertexList rrv = {0};
+		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+			AppendRoundedRectangle(&rrv,b->x,clientHeight-1+b->y,0,b->halfWidth,b->halfHeight,b->roundingRadius,b->color,b->IconColor);
+		}
+		GLuint buf;
+		glGenBuffers(1,&buf);
+		glBindBuffer(GL_ARRAY_BUFFER,buf);
+		glBufferData(GL_ARRAY_BUFFER,rrv.used*sizeof(*rrv.elements),rrv.elements,GL_STATIC_DRAW);
+		RoundedRectangleShaderPrepBuffer();
+		glDrawArrays(GL_TRIANGLES,0,rrv.used);
+		LIST_FREE(&rrv);
+
+		glUseProgram(TextureShader.id);
+		glUniform1i(TextureShader.uTex,0);
+		glBindTexture(GL_TEXTURE_2D,font.texture.id);
+		TextureVertexList tvl = {0};
+		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+			AppendCenteredStringMesh(&tvl,&font,b->string,wcslen(b->string),b->x,clientHeight-1+b->y,1);
+		}
+		glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
+		glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
+		TextureShaderPrepBuffer();
+		glDrawArrays(GL_TRIANGLES,0,tvl.used);
+		LIST_FREE(&tvl);
+
+		glDeleteBuffers(1,&buf);
 
 		SwapBuffers(hdc);
 		ValidateRect(hwnd,0);
@@ -1941,10 +1962,9 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	CoInitialize(0);
 
-	DarkGLMakeWindow(RID_ICON,L"DarkViewer",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
+	DarkGLMakeWindow(RID_ICON,L"DarkWolken",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
-	GenCachedFont(&font,L"Consolas",24);
-	texture = font.texture;
+	GenCachedFont(&font,L"Segoe UI",12);
 
 	GetModuleFileNameW(0,exePath,COUNT(exePath));
 	int argc;
