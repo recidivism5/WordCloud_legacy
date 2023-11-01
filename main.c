@@ -1204,26 +1204,48 @@ void RoundedRectangleShaderPrepBuffer(){
 	glVertexAttribPointer(RoundedRectangleShader.aColor,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(RoundedRectangleVertex),offsetof(RoundedRectangleVertex,color));
 	glVertexAttribPointer(RoundedRectangleShader.aIconColor,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(RoundedRectangleVertex),offsetof(RoundedRectangleVertex,IconColor));
 }
-/*void AppendRoundedRectangle(ListHeader **verts, int x, int y, int z, int halfWidth, int halfHeight, float RoundingRadius, uint32_t color, uint32_t IconColor){
-	//we have to rotate the bounding rectangle on the CPU, because otherwise we'd have to change the ortho matrix and do a separate draw call for every RoundedRect.
-	RoundedRectangleVertex v[6];
-	int hwp = halfWidth+4;
+LIST_IMPLEMENTATION(RoundedRectangleVertex)
+void AppendRoundedRectangle(RoundedRectangleVertexList *verts, int x, int y, int z, int halfWidth, int halfHeight, float RoundingRadius, uint32_t color, uint32_t IconColor){
+	RoundedRectangleVertex *v = RoundedRectangleVertexListMakeRoom(verts,6);
+	int hwp = halfWidth+4;// pad by 4px to not cut off antialiased edges
 	int hhp = halfHeight+4;
-	v[0].Position = (FVec3){-hwp,hhp,z};
-	v[1].Position = (FVec3){-hwp,-hhp,z};
-	v[2].Position = (FVec3){hwp,-hhp,z};
-	v[3].Position = v[2].Position;
-	v[4].Position = (FVec3){hwp,hhp,z};
-	v[5].Position = v[0].Position;
-	for (int i = 0; i < COUNT(v); i++){
-		v[i].Position = fvec3Add(v[i].Position,(FVec3){x,y,0});
-		v[i].Rectangle = (FVec4){x,y,halfWidth,halfHeight};
+
+	v[0].Position[0] = -hwp + x;
+	v[0].Position[1] = hhp + y;
+	v[0].Position[2] = z;
+
+	v[1].Position[0] = -hwp + x;
+	v[1].Position[1] = -hhp + y;
+	v[1].Position[2] = z;
+
+	v[2].Position[0] = hwp + x;
+	v[2].Position[1] = -hhp + y;
+	v[2].Position[2] = z;
+
+	v[3].Position[0] = v[2].Position[0];
+	v[3].Position[1] = v[2].Position[1];
+	v[3].Position[2] = v[2].Position[2];
+
+	v[4].Position[0] = hwp + x;
+	v[4].Position[1] = hhp + y;
+	v[4].Position[2] = z;
+
+	v[5].Position[0] = v[0].Position[0];
+	v[5].Position[1] = v[0].Position[1];
+	v[5].Position[2] = v[0].Position[2];
+
+	for (int i = 0; i < 6; i++){
+		v[i].Rectangle[0] = x;
+		v[i].Rectangle[1] = y;
+		v[i].Rectangle[2] = halfWidth;
+		v[i].Rectangle[3] = halfHeight;
 		v[i].RoundingRadius = RoundingRadius;
 		v[i].color = color;
 		v[i].IconColor = IconColor;
 	}
-	ListAppend(verts,v,COUNT(v));
-}*/
+
+	verts->used += 6;
+}
 typedef struct {
 	float Position[3];
 	float Texcoord[2];
@@ -1369,9 +1391,16 @@ void GenCachedFont(CachedFont *cf, WCHAR *name, int height){
 	TextureFromImage(&cf->texture,&img,false);
 	DeleteObject(hbm);
 }
+int StringWidth(CachedFont *f, WCHAR *string, int charCount){
+	int x = 0;
+	for (int i = 0; i < charCount; i++){
+		x += f->charDims[string[i]-' '][0];
+	}
+	return x;
+}
 LIST_IMPLEMENTATION(TextureVertex)
-void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, size_t charCount, int x, int y, int z){
-	for (size_t i = 0; i < charCount; i++){
+void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, int charCount, int x, int y, int z){
+	for (int i = 0; i < charCount; i++){
 		TextureVertex *v = TextureVertexListMakeRoom(list,6);
 
 		v[0].Position[0] = x;
@@ -1405,6 +1434,9 @@ void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, size_t c
 		list->used += 6;
 		x += f->charDims[s[i]-' '][0];
 	}
+}
+void AppendCenteredStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, int charCount, int x, int y, int z){
+	AppendStringMesh(list,f,s,charCount,x-StringWidth(f,s,charCount)/2,y-f->charDims['l'-' '][1]/2,z);
 }
 
 #include <intrin.h>
@@ -1688,31 +1720,14 @@ void LoadImg(WCHAR *path){
 	}
 }
 
-enum Anchor {
-	ANCHOR_BOTTOMLEFT,
-	ANCHOR_BOTTOMRIGHT,
-	ANCHOR_TOPLEFT,
-	ANCHOR_TOPRIGHT,
-	ANCHOR_CENTER
-};
 typedef struct {
-	int x, y, width, height, roundingRadius;
-	uint32_t color;
-	bool centered;
-	enum Anchor anchor;
+	int x, y, halfWidth, halfHeight, roundingRadius;
+	uint32_t color, IconColor;
 	WCHAR *string;
 	void (*func)(void);
 } Button;
-Button testButton = {
-	.x = 0,
-	.y = 0,
-	.width = 100,
-	.height = 30,
-	.roundingRadius = 15,
-	.centered = true,
-	.anchor = ANCHOR_CENTER,
-	.string = L"test",
-	.func = 0
+Button buttons[] = {
+	{104,-40,80,20,20,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"test",0}
 };
 bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
@@ -1843,6 +1858,25 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 		if (texture.id){
+
+			GLuint buf;
+			glGenBuffers(1,&buf);
+			glBindBuffer(GL_ARRAY_BUFFER,buf);
+
+			glUseProgram(RoundedRectangleShader.id);
+			glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho);
+			RoundedRectangleVertexList rrv = {0};
+			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+				AppendRoundedRectangle(&rrv,b->x,clientHeight-1+b->y,0,b->halfWidth,b->halfHeight,b->roundingRadius,b->color,b->IconColor);
+			}
+			//AppendRoundedRectangle(&rrv,20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_REVERSE_PLAY));
+			//AppendRoundedRectangle(&rrv,clientWidth-20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_PLAY));
+			//AppendRoundedRectangle(&rrv,4+50,clientHeight-16,0,50,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE));
+			glBufferData(GL_ARRAY_BUFFER,rrv.used*sizeof(*rrv.elements),rrv.elements,GL_STATIC_DRAW);
+			RoundedRectangleShaderPrepBuffer();
+			glDrawArrays(GL_TRIANGLES,0,rrv.used);
+			LIST_FREE(&rrv);
+
 			glUseProgram(TextureShader.id);
 			glUniform1i(TextureShader.uTex,0);
 			glBindTexture(GL_TEXTURE_2D,texture.id);
@@ -1867,30 +1901,20 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,mata);
 			glBindBuffer(GL_ARRAY_BUFFER,imageQuad.vertexBuffer);
 			TextureShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
+			//glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
 
 			TextureVertexList tvl = {0};
-			AppendStringMesh(&tvl,&font,L"test picklmlstone",17,clientWidth/2,clientHeight/2-200,0);
+			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
+				AppendCenteredStringMesh(&tvl,&font,b->string,wcslen(b->string),b->x,clientHeight-1+b->y,1);
+			}
 			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
-			GLuint buf;
-			glGenBuffers(1,&buf);
 			glBindBuffer(GL_ARRAY_BUFFER,buf);
 			glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
 			TextureShaderPrepBuffer();
 			glDrawArrays(GL_TRIANGLES,0,tvl.used);
-			glDeleteBuffers(1,&buf);
+			LIST_FREE(&tvl);
 
-			/*ListHeader *verts;
-			glUseProgram(RoundedRectangleShader.id);
-			glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho.arr);
-			ListInit(&verts,sizeof(RoundedRectangleVertex),0);
-			AppendRoundedRectangle(&verts,20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_REVERSE_PLAY));
-			AppendRoundedRectangle(&verts,clientWidth-20,workspaceHeight/2,0,10,25,10,RGBA(238,84,12,RR_DISH),RGBA(255,255,255,RR_ICON_PLAY));
-			AppendRoundedRectangle(&verts,4+50,clientHeight-16,0,50,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE));
-			DrawTriangles(verts,RoundedRectangleShaderPrepBuffer,false);
-			free(verts);
-
-			glUseProgram(ColorShader.id);
+			/*glUseProgram(ColorShader.id);
 			glUniformMatrix4fv(ColorShader.proj,1,GL_FALSE,ortho.arr);
 			ListInit(&verts,sizeof(ColorVertex),0);
 			AppendFormatStringMesh(&verts,&font,10,clientHeight-20,1,12,RGBA(255,255,255,255),L"Interpolation: %s",interpolation ? L"On" : L"Off");
@@ -1898,6 +1922,8 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			AppendFormatStringMesh(&verts,&font,180,clientHeight-20,1,12,RGBA(255,255,255,255),L"Image %d of %d in folder.",imageIndex+1,images->used);
 			DrawTriangles(verts,ColorShaderPrepBuffer,false);
 			free(verts);*/
+
+			glDeleteBuffers(1,&buf);
 		}
 
 		SwapBuffers(hdc);
