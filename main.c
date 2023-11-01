@@ -1654,8 +1654,6 @@ HWND DarkGLMakeWindow(int iconId, WCHAR *title, int clientWidth, int clientHeigh
 	return hwnd;
 }
 
-WCHAR exePath[MAX_PATH];
-WCHAR currentFolder[MAX_PATH];
 WCHAR gpath[MAX_PATH+16];
 HWND gwnd;
 HDC hdc;
@@ -1678,6 +1676,12 @@ float pos[3];
 bool pan = false;
 POINT panPoint;
 float originalPos[3];
+WCHAR imagePath[MAX_PATH];
+int imagePathLen;
+WCHAR textPath[MAX_PATH];
+int textPathLen;
+char *text;
+size_t textLen;
 
 void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
 	LIST_FREE(list);
@@ -1698,28 +1702,6 @@ void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
 	FindClose(hFind);
 }
 
-void LoadImg(WCHAR *path){
-	TextureFromFile(&texture,path,interpolation);
-	_snwprintf(gpath,COUNT(gpath),L"%s - DarkViewer",path);
-	SetWindowTextW(gwnd,gpath);
-	wcscpy(gpath,path);
-	wcscpy(currentFolder,path);
-	WCHAR *s = wcsrchr(gpath,L'\\');
-	currentFolder[s-gpath+1] = 0;
-	WCHAR *name = (s-gpath)+path+1;
-	s[1] = L'*';
-	s[2] = 0;
-	GetImagesInFolder(&images,gpath);
-	printf("images count: %d\n",images.used);
-	for (int i = 0; i < images.used; i++){
-		if (!wcscmp(images.elements[i],name)){
-			imageIndex = i;
-			printf("imageIndex: %d\n",i);
-			break;
-		}
-	}
-}
-
 typedef struct {
 	int x, y, halfWidth, halfHeight, roundingRadius;
 	uint32_t color, IconColor;
@@ -1738,6 +1720,31 @@ void OpenImage(){
 		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
 			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
 				TextureFromFile(&texture,path,interpolation);
+				wcscpy(imagePath,path);
+				imagePathLen = wcslen(imagePath);
+				InvalidateRect(gwnd,0,0);
+				CoTaskMemFree(path);
+			}
+			psi->lpVtbl->Release(psi);
+		}
+		pfd->lpVtbl->Release(pfd);
+	}
+}
+void OpenText(){
+	IFileDialog *pfd;
+	IShellItem *psi;
+	PWSTR path = 0;
+	COMDLG_FILTERSPEC fs = {L"Text files", L"*.txt;"};
+	if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog,0,CLSCTX_INPROC_SERVER,&IID_IFileOpenDialog,&pfd))){
+		pfd->lpVtbl->SetFileTypes(pfd,1,&fs); 
+		pfd->lpVtbl->SetTitle(pfd,L"Open Text");
+		pfd->lpVtbl->Show(pfd,gwnd);
+		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
+			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
+				if (text) free(text);
+				text = LoadFileW(path,&textLen);
+				wcscpy(textPath,path);
+				textPathLen = wcslen(textPath);
 				InvalidateRect(gwnd,0,0);
 				CoTaskMemFree(path);
 			}
@@ -1748,8 +1755,8 @@ void OpenImage(){
 }
 Button buttons[] = {
 	//0x7B9944 | (RR_DISH<<24)
-	{50,-16,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
-	{50,-16-28,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",0},
+	{50,-16,46,12,12,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
+	{50,-16-28,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
 };
 bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
@@ -1837,7 +1844,7 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		WCHAR p[MAX_PATH];
 		if (DragQueryFileW(wParam,0xFFFFFFFF,0,0) > 1) goto EXIT_DROPFILES;
 		DragQueryFileW(wParam,0,p,COUNT(p));
-		LoadImg(p);
+		//LoadImg(p);
 	EXIT_DROPFILES:
 		DragFinish(wParam);
 		InvalidateRect(hwnd,0,0);
@@ -1938,6 +1945,12 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
 			AppendCenteredStringMesh(&tvl,&font,b->string,wcslen(b->string),b->x,clientHeight-1+b->y,1);
 		}
+		if (imagePathLen){
+			AppendStringMesh(&tvl,&font,imagePath,imagePathLen,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0);
+		}
+		if (textPathLen){
+			AppendStringMesh(&tvl,&font,textPath,textPathLen,buttons[1].x + buttons[1].halfWidth+4,clientHeight-1+buttons[1].y-font.charDims['l'-' '][1]/2,0);
+		}
 		glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
 		glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
 		TextureShaderPrepBuffer();
@@ -1965,10 +1978,11 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 
 	GenCachedFont(&font,L"Segoe UI",12);
 
-	GetModuleFileNameW(0,exePath,COUNT(exePath));
 	int argc;
 	WCHAR **argv = CommandLineToArgvW(GetCommandLineW(),&argc);
-	if (argc==2) LoadImg(argv[1]);
+	if (argc==2){
+		//LoadImg(argv[1]);
+	}
 
 	glGenBuffers(1,&imageQuad.vertexBuffer);
 	glBindBuffer(GL_ARRAY_BUFFER,imageQuad.vertexBuffer);
@@ -1982,6 +1996,7 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	};
 	glBufferData(GL_ARRAY_BUFFER,sizeof(v),v,GL_STATIC_DRAW);
 	imageQuad.vertexCount = 6;
+	glCheckError();
 
 	cursorArrow = LoadCursorA(0,IDC_ARROW);
 	cursorFinger = LoadCursorA(0,IDC_HAND);
