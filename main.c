@@ -1665,7 +1665,8 @@ typedef struct {
 	int vertexCount;
 } CachedMesh;
 CachedMesh imageQuad;
-Texture texture;
+Image inputImage, outputImage;
+Texture outputTexture;
 HCURSOR cursorArrow, cursorFinger, cursorPan;
 LIST_IMPLEMENTATION(LPWSTR)
 LPWSTRList images;
@@ -1702,6 +1703,65 @@ void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
 	FindClose(hFind);
 }
 
+void UpdateOutputTexture(){
+	if (outputImage.pixels) free(outputImage.pixels);
+	outputImage.width = inputImage.width;
+	outputImage.height = inputImage.height;
+	outputImage.pixels = MallocOrDie(outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+	memcpy(outputImage.pixels,inputImage.pixels,outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+
+	int minGrey = 255;
+	int maxGrey = 0;
+	for (int i = 0; i < outputImage.width*outputImage.height; i++){
+		uint8_t *p = outputImage.pixels+i;
+		int grey = min(255,0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2]);
+		if (grey < minGrey) minGrey = grey;
+		else if (grey > maxGrey) maxGrey = grey;
+		p[0] = grey;
+		p[1] = grey;
+		p[2] = grey;
+	}
+
+	int divisions = 4;
+	int *invals = MallocOrDie((divisions)*sizeof(*invals));
+	int *outvals = MallocOrDie((divisions)*sizeof(*invals));
+	int id = (maxGrey-minGrey)/divisions;
+	int od = 255/divisions;
+	int iv = minGrey;
+	int ov = 0;
+	for (int i = 0; i < divisions; i++){
+		invals[i] = iv;
+		outvals[i] = ov;
+		iv += id;
+		ov += od;
+	}
+	invals[divisions-1] = maxGrey;
+	outvals[divisions-1] = 255;
+
+	for (int i = 0; i < outputImage.width*outputImage.height; i++){
+		uint8_t *p = outputImage.pixels+i;
+		for (int j = 1; j < divisions; j++){
+			if (p[0] <= invals[j]){
+				if (p[0]-invals[j-1] > invals[j]-p[0]){
+					p[0] = outvals[j];
+					p[1] = outvals[j];
+					p[2] = outvals[j];
+					break;
+				} else {
+					p[0] = outvals[j-1];
+					p[1] = outvals[j-1];
+					p[2] = outvals[j-1];
+					break;
+				}
+			}
+		}
+	}
+
+	TextureFromImage(&outputTexture,&outputImage,false);
+
+	free(outputImage.pixels);
+}
+
 typedef struct {
 	int x, y, halfWidth, halfHeight, roundingRadius;
 	uint32_t color, IconColor;
@@ -1719,7 +1779,9 @@ void OpenImage(){
 		pfd->lpVtbl->Show(pfd,gwnd);
 		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
 			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
-				TextureFromFile(&texture,path,interpolation);
+				if (inputImage.pixels) free(inputImage.pixels);
+				LoadImageFromFile(&inputImage,path,true);
+				UpdateOutputTexture();
 				wcscpy(imagePath,path);
 				imagePathLen = wcslen(imagePath);
 				InvalidateRect(gwnd,0,0);
@@ -1896,15 +1958,15 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-		if (texture.id){
+		if (outputTexture.id){
 			glUseProgram(TextureShader.id);
 			glUniform1i(TextureShader.uTex,0);
-			glBindTexture(GL_TEXTURE_2D,texture.id);
-			float width = min(clientWidth,texture.width);
-			float height = width * ((float)texture.height/(float)texture.width);
+			glBindTexture(GL_TEXTURE_2D,outputTexture.id);
+			float width = min(clientWidth,outputTexture.width);
+			float height = width * ((float)outputTexture.height/(float)outputTexture.width);
 			if (height > clientHeight){
 				height = clientHeight;
-				width = height * ((float)texture.width/(float)texture.height);
+				width = height * ((float)outputTexture.width/(float)outputTexture.height);
 			}
 			width *= scale;
 			height *= scale;
