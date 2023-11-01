@@ -1659,7 +1659,7 @@ WCHAR currentFolder[MAX_PATH];
 WCHAR gpath[MAX_PATH+16];
 HWND gwnd;
 HDC hdc;
-int clientWidth = 800, clientHeight = 600, menuHeight = 32, workspaceHeight;
+int clientWidth = 800, clientHeight = 600;
 float ortho[16];
 CachedFont font;
 typedef struct {
@@ -1772,7 +1772,6 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 	case WM_SIZE:{
 		clientWidth = LOWORD(lParam);
 		clientHeight = HIWORD(lParam);
-		workspaceHeight = clientHeight - menuHeight;
 		glViewport(0,0,clientWidth,clientHeight);
 		Float4x4Orthogonal(ortho,0,clientWidth,0,clientHeight,-10,10);
 		return 0;
@@ -1896,15 +1895,15 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			glBindTexture(GL_TEXTURE_2D,texture.id);
 			float width = min(clientWidth,texture.width);
 			float height = width * ((float)texture.height/(float)texture.width);
-			if (height > workspaceHeight){
-				height = workspaceHeight;
+			if (height > clientHeight){
+				height = clientHeight;
 				width = height * ((float)texture.width/(float)texture.height);
 			}
 			width *= scale;
 			height *= scale;
 			if (scale == 1){
 				pos[0] = (clientWidth-(int)width)/2;
-				pos[1] = (workspaceHeight-(int)height)/2;
+				pos[1] = (clientHeight-(int)height)/2;
 				pos[2] = -1;
 			}
 			float mata[16],matb[16],matc[16];
