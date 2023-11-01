@@ -8,6 +8,8 @@ int _fltused;
 #include <time.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <intrin.h>
+#define Assert(cond) do { if (!(cond)) __debugbreak(); } while (0)
 
 #include <windows.h>
 #include <windowsx.h>
@@ -86,6 +88,7 @@ void FatalErrorW(WCHAR *format, ...){
 
 void *MallocOrDie(size_t size){
 	void *p = malloc(size);
+	Assert(p);
 	if (!p) FatalErrorA("malloc failed.");
 	return p;
 }
@@ -1439,8 +1442,6 @@ void AppendCenteredStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, 
 	AppendStringMesh(list,f,s,charCount,x-StringWidth(f,s,charCount)/2,y-f->charDims['l'-' '][1]/2,z);
 }
 
-#include <intrin.h>
-#define Assert(cond) do { if (!(cond)) __debugbreak(); } while (0)
 int StringsAreEqual(const char* src, const char* dst, size_t dstlen){
 	while (*src && dstlen-- && *dst)
 	{
@@ -1703,17 +1704,70 @@ void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
 	FindClose(hFind);
 }
 
-void UpdateOutputTexture(){
-	if (outputImage.pixels) free(outputImage.pixels);
-	outputImage.width = inputImage.width;
-	outputImage.height = inputImage.height;
-	outputImage.pixels = MallocOrDie(outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
-	memcpy(outputImage.pixels,inputImage.pixels,outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+void GaussianBlur(Image *img, int strength){
+	float *kernel = MallocOrDie(strength*sizeof(*kernel));
+	float d = 3.0f / (strength-1);
+	float disx = 0.0f;
+	float inv2pi = 1.0f / sqrtf(2.0f*M_PI);
+	for (int i = 0; i < strength; i++){
+		kernel[i] = expf(-0.5f*disx*disx)*inv2pi;
+		disx += d;
+	}
+	float sum = 0.0f;
+	for (int i = 0; i < strength; i++){
+		sum += kernel[i];
+	}
+	sum = 1.0f / sum;
+	for (int i = 0; i < strength; i++){
+		kernel[i] *= sum;
+	}
+	Image b;
+	b.width = img->width;
+	b.height = img->height;
+	b.pixels = MallocOrDie(b.width*b.height*sizeof(*b.pixels));
+	float inv255 = 1.0f / 255.0f;
+	for (int y = 0; y < img->height; y++){
+		for (int x = 0; x < img->width; x++){
+			float sums[3] = {0,0,0};
+			for (int dx = -strength+1; dx < strength-1; dx++){
+				uint8_t *p = img->pixels+y*img->width+CLAMP(x+dx,0,img->width-1);
+				for (int i = 0; i < 3; i++){
+					sums[i] = min(1.0f,sums[i]+inv255*p[i]*kernel[abs(dx)]);
+				}
+			}
+			uint8_t *p = b.pixels+y*b.width+x;
+			for (int i = 0; i < 3; i++){
+				p[i] = sums[i]*255;
+			}
+			p[3] = ((uint8_t *)(img->pixels+y*img->width+x))[3];
+		}
+	}
+	for (int x = 0; x < img->width; x++){
+		for (int y = 0; y < img->height; y++){
+			float sums[3] = {0,0,0};
+			for (int dy = -strength+1; dy < strength-1; dy++){
+				uint8_t *p = b.pixels+CLAMP(y+dy,0,b.height-1)*b.width+x;
+				for (int i = 0; i < 3; i++){
+					sums[i] = min(1.0f,sums[i]+inv255*p[i]*kernel[abs(dy)]);
+				}
+			}
+			uint8_t *p = img->pixels+y*img->width+x;
+			for (int i = 0; i < 3; i++){
+				p[i] = sums[i]*255;
+			}
+			p[3] = ((uint8_t *)(b.pixels+y*b.width+x))[3];
+		}
+	}
 
+	free(kernel);
+	free(b.pixels);
+}
+
+void GreyScaleQuantize(Image *img, int divisions){
 	int minGrey = 255;
 	int maxGrey = 0;
-	for (int i = 0; i < outputImage.width*outputImage.height; i++){
-		uint8_t *p = outputImage.pixels+i;
+	for (int i = 0; i < img->width*img->height; i++){
+		uint8_t *p = img->pixels+i;
 		int grey = min(255,0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2]);
 		if (grey < minGrey) minGrey = grey;
 		else if (grey > maxGrey) maxGrey = grey;
@@ -1722,7 +1776,6 @@ void UpdateOutputTexture(){
 		p[2] = grey;
 	}
 
-	int divisions = 4;
 	int *invals = MallocOrDie((divisions)*sizeof(*invals));
 	int *outvals = MallocOrDie((divisions)*sizeof(*invals));
 	int id = (maxGrey-minGrey)/divisions;
@@ -1738,8 +1791,8 @@ void UpdateOutputTexture(){
 	invals[divisions-1] = maxGrey;
 	outvals[divisions-1] = 255;
 
-	for (int i = 0; i < outputImage.width*outputImage.height; i++){
-		uint8_t *p = outputImage.pixels+i;
+	for (int i = 0; i < img->width*img->height; i++){
+		uint8_t *p = img->pixels+i;
 		for (int j = 1; j < divisions; j++){
 			if (p[0] <= invals[j]){
 				if (p[0]-invals[j-1] > invals[j]-p[0]){
@@ -1757,9 +1810,23 @@ void UpdateOutputTexture(){
 		}
 	}
 
-	TextureFromImage(&outputTexture,&outputImage,false);
+	free(invals);
+	free(outvals);
+}
 
-	free(outputImage.pixels);
+void UpdateOutputTexture(){
+	if (inputImage.width != outputImage.width || inputImage.height != outputImage.height){
+		if (outputImage.pixels) free(outputImage.pixels);
+		outputImage.width = inputImage.width;
+		outputImage.height = inputImage.height;
+		outputImage.pixels = MallocOrDie(outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+	}
+	memcpy(outputImage.pixels,inputImage.pixels,outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+	
+	GaussianBlur(&outputImage,6);
+	GreyScaleQuantize(&outputImage,4);
+
+	TextureFromImage(&outputTexture,&outputImage,false);
 }
 
 typedef struct {
