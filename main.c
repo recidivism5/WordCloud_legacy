@@ -967,7 +967,11 @@ PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
 	X(PFNGLUNIFORM3IVPROC,               glUniform3iv               ) \
 	X(PFNGLUNIFORM4IVPROC,               glUniform4iv               ) \
 	X(PFNGLUNIFORMMATRIX4FVPROC,         glUniformMatrix4fv         ) \
-	X(PFNGLDEBUGMESSAGECALLBACKPROC,     glDebugMessageCallback     )
+																	  \
+	X(PFNGLGENFRAMEBUFFERSPROC,			 glGenFramebuffers			) \
+	X(PFNGLDELETEFRAMEBUFFERSPROC,		 glDeleteFramebuffers		) \
+	X(PFNGLBINDFRAMEBUFFERPROC,			 glBindFramebuffer			) \
+	X(PFNGLFRAMEBUFFERTEXTURE2DPROC,	 glFramebufferTexture2D		)
 #define X(type, name) type name;
 GL_FUNCTIONS(X)
 #undef X
@@ -1402,7 +1406,7 @@ int StringWidth(CachedFont *f, WCHAR *string, int charCount){
 	return x;
 }
 LIST_IMPLEMENTATION(TextureVertex)
-void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, int charCount, int x, int y, int z){
+void AppendStringMesh(TextureVertexList *list, CachedFont *f, int x, int y, int z, WCHAR *s, int charCount){
 	for (int i = 0; i < charCount; i++){
 		TextureVertex *v = TextureVertexListMakeRoom(list,6);
 
@@ -1438,8 +1442,16 @@ void AppendStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, int char
 		x += f->charDims[s[i]-' '][0];
 	}
 }
-void AppendCenteredStringMesh(TextureVertexList *list, CachedFont *f, WCHAR *s, int charCount, int x, int y, int z){
-	AppendStringMesh(list,f,s,charCount,x-StringWidth(f,s,charCount)/2,y-f->charDims['l'-' '][1]/2,z);
+void AppendCenteredStringMesh(TextureVertexList *list, CachedFont *f, int x, int y, int z, WCHAR *s, int charCount){
+	AppendStringMesh(list,f,x-StringWidth(f,s,charCount)/2,y-f->charDims['l'-' '][1]/2,z,s,charCount);
+}
+void AppendFormatCenteredStringMesh(TextureVertexList *list, CachedFont *f, int x, int y, int z, WCHAR *format, ...){
+	va_list args;
+	va_start(args,format);
+	static WCHAR str[512];
+	int len = vswprintf(str,COUNT(str),format,args);
+	AppendCenteredStringMesh(list,f,x,y,z,str,len);
+	va_end(args);
 }
 
 int StringsAreEqual(const char* src, const char* dst, size_t dstlen){
@@ -1945,10 +1957,21 @@ void OpenText(){
 	}
 }
 void ToggleGreyscale();
+void IncrementGaussianBlurStrength(){
+	gaussianBlurStrength = min(50,gaussianBlurStrength+1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void DecrementGaussianBlurStrength(){
+	gaussianBlurStrength = max(0,gaussianBlurStrength-1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
 Button buttons[] = {
 	{50,-14,46,10,10,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
-	{50,-14-26,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
-	{50,-14-52,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
+	{50,-14-26*1,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
+	{50,-14-26*2,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
+	{14,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementGaussianBlurStrength},{200,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementGaussianBlurStrength},
 };
 void ToggleGreyscale(){
 	greyscale = !greyscale;
@@ -2146,13 +2169,14 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		glBindTexture(GL_TEXTURE_2D,font.texture.id);
 		TextureVertexList tvl = {0};
 		for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
-			AppendCenteredStringMesh(&tvl,&font,b->string,wcslen(b->string),b->x,clientHeight-1+b->y,1);
+			AppendCenteredStringMesh(&tvl,&font,b->x,clientHeight-1+b->y,1,b->string,wcslen(b->string));
 		}
+		AppendFormatCenteredStringMesh(&tvl,&font,buttons[3].x + (buttons[4].x-buttons[3].x)/2,clientHeight-1+buttons[3].y,0,L"Gaussian Blur Strength: %d",gaussianBlurStrength);
 		if (imagePathLen){
-			AppendStringMesh(&tvl,&font,imagePath,imagePathLen,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0);
+			AppendStringMesh(&tvl,&font,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0,imagePath,imagePathLen);
 		}
 		if (textPathLen){
-			AppendStringMesh(&tvl,&font,textPath,textPathLen,buttons[1].x + buttons[1].halfWidth+4,clientHeight-1+buttons[1].y-font.charDims['l'-' '][1]/2,0);
+			AppendStringMesh(&tvl,&font,buttons[1].x + buttons[1].halfWidth+4,clientHeight-1+buttons[1].y-font.charDims['l'-' '][1]/2,0,textPath,textPathLen);
 		}
 		glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
 		glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
