@@ -1661,17 +1661,23 @@ HDC hdc;
 int clientWidth = 800, clientHeight = 600;
 float ortho[16];
 CachedFont font;
+
 typedef struct {
 	GLuint vertexBuffer;
 	int vertexCount;
 } CachedMesh;
 CachedMesh imageQuad;
-Image inputImage, outputImage;
-Texture outputTexture;
+typedef struct {
+	Image image;
+	Texture texture;
+} ImageTexture;
+ImageTexture images[5];
+bool greyscale = false;
+int gaussianBlurStrength = 9;
+int quantizeDivisions = 4;
+int rectangleDecomposeAreaThreshold = 25;
+
 HCURSOR cursorArrow, cursorFinger, cursorPan;
-LIST_IMPLEMENTATION(LPWSTR)
-LPWSTRList images;
-int imageIndex;
 int scale = 1;
 bool interpolation = false;
 float pos[3];
@@ -1685,25 +1691,16 @@ int textPathLen;
 char *text;
 size_t textLen;
 
-void GetImagesInFolder(LPWSTRList *list, WCHAR *path){
-	LIST_FREE(list);
-	WIN32_FIND_DATAW fd;
-	HANDLE hFind = 0;
-	if ((hFind = FindFirstFileW(path,&fd)) == INVALID_HANDLE_VALUE) FatalErrorW(L"GetImagesInFolder: Folder not found: %s",path);
-	do {
-		//FindFirstFile will always return "." and ".." as the first two directories.
-		if (wcscmp(fd.cFileName,L".") && wcscmp(fd.cFileName,L"..") && !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)){
-			size_t len = wcslen(fd.cFileName);
-			if (len > 4 && (!wcscmp(fd.cFileName+len-4,L".jpg") || !wcscmp(fd.cFileName+len-4,L".png"))){
-				LPWSTR *s = LPWSTRListMakeRoom(list,1);
-				*s = MallocOrDie((len+1)*sizeof(WCHAR));
-				wcscpy(*s,fd.cFileName);
-			}
-		}
-	} while (FindNextFileW(hFind,&fd));
-	FindClose(hFind);
+/****************** Image Processing */
+void GreyScale(Image *img){
+	for (int i = 0; i < img->width*img->height; i++){
+		uint8_t *p = img->pixels+i;
+		int grey = min(255,0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2]);
+		p[0] = grey;
+		p[1] = grey;
+		p[2] = grey;
+	}
 }
-
 void GaussianBlur(Image *img, int strength){
 	float *kernel = MallocOrDie(strength*sizeof(*kernel));
 	float d = 3.0f / (strength-1);
@@ -1762,7 +1759,58 @@ void GaussianBlur(Image *img, int strength){
 	free(kernel);
 	free(b.pixels);
 }
+void Quantize(Image *img, int divisions){
+	int mins[3] = {255,255,255};
+	int maxes[3] = {0,0,0};
+	for (int i = 0; i < img->width*img->height; i++){
+		uint8_t *p = img->pixels+i;
+		for (int j = 0; j < 3; j++){
+			if (p[j] < mins[j]) mins[j] = p[j];
+			else if (p[j] > maxes[j]) maxes[j] = p[j];
+		}
+	}
+	int *invals = MallocOrDie(divisions*3*sizeof(*invals));
+	int *outvals = MallocOrDie(divisions*sizeof(*invals));
+	int ids[3];
+	for (int i = 0; i < 3; i++){
+		ids[i] = (maxes[i]-mins[i])/divisions;
+	}
+	int od = 255/divisions;
+	int ov = 0;
+	for (int i = 0; i < 3; i++){
+		for (int j = 0; j < divisions; j++){
+			invals[i*divisions+j] = mins[i];
+			mins[i] += ids[i];
+		}
+	}
+	for (int i = 0; i < divisions; i++){
+		outvals[i] = ov;
+		ov += od;
+	}
+	for (int i = 0; i < 3; i++){
+		invals[i*divisions+divisions-1] = maxes[i];
+	}
+	outvals[divisions-1] = 255;
 
+	for (int i = 0; i < img->width*img->height; i++){
+		uint8_t *p = img->pixels+i;
+		for (int j = 0; j < 3; j++){
+			for (int k = 1; k < divisions; k++){
+				if (p[j] <= invals[j*divisions+k]){
+					if (p[j]-invals[j*divisions+k-1] > invals[j*divisions+k]-p[j]){
+						p[j] = outvals[k];
+					} else {
+						p[j] = outvals[k-1];
+					}
+					break;
+				}
+			}
+		}
+	}
+
+	free(invals);
+	free(outvals);
+}
 void GreyScaleQuantize(Image *img, int divisions){
 	int minGrey = 255;
 	int maxGrey = 0;
@@ -1814,19 +1862,26 @@ void GreyScaleQuantize(Image *img, int divisions){
 	free(outvals);
 }
 
-void UpdateOutputTexture(){
-	if (inputImage.width != outputImage.width || inputImage.height != outputImage.height){
-		if (outputImage.pixels) free(outputImage.pixels);
-		outputImage.width = inputImage.width;
-		outputImage.height = inputImage.height;
-		outputImage.pixels = MallocOrDie(outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
+void Update(){
+	size_t size = images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels);
+	memcpy(images[1].image.pixels,images[0].image.pixels,size);
+	if (greyscale){
+		GreyScale(&images[1].image);
 	}
-	memcpy(outputImage.pixels,inputImage.pixels,outputImage.width*outputImage.height*sizeof(*outputImage.pixels));
-	
-	GaussianBlur(&outputImage,6);
-	GreyScaleQuantize(&outputImage,4);
+	GaussianBlur(&images[1].image,gaussianBlurStrength);
+	memcpy(images[2].image.pixels,images[1].image.pixels,size);
+	Quantize(&images[2].image,quantizeDivisions);
+	memcpy(images[3].image.pixels,images[2].image.pixels,size);
 
-	TextureFromImage(&outputTexture,&outputImage,false);
+	//RectangleDecompose(&images[3].image,rectangleDecomposeAreaThreshold);
+
+	//rectangle decompose, for each rectangle randomly choose whether to first expand along x or y. Expand along that dimension until you hit something, then expand along the other.
+	//this way you can get random results each time
+	//also pick the word for each rectangle with some randomness if constraints allow it.
+
+	for (ImageTexture *it = images; it < images+COUNT(images); it++){
+		TextureFromImage(&it->texture,&it->image,false);
+	}
 }
 
 typedef struct {
@@ -1846,9 +1901,16 @@ void OpenImage(){
 		pfd->lpVtbl->Show(pfd,gwnd);
 		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
 			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
-				if (inputImage.pixels) free(inputImage.pixels);
-				LoadImageFromFile(&inputImage,path,true);
-				UpdateOutputTexture();
+				for (ImageTexture *it = images; it < images+COUNT(images); it++){
+					free(it->image.pixels);
+				}
+				LoadImageFromFile(&images[0].image,path,true);
+				for (int i = 1; i < COUNT(images); i++){
+					images[i].image.width = images[0].image.width;
+					images[i].image.height = images[0].image.height;
+					images[i].image.pixels = MallocOrDie(images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels));
+				}
+				Update();
 				wcscpy(imagePath,path);
 				imagePathLen = wcslen(imagePath);
 				InvalidateRect(gwnd,0,0);
@@ -1882,11 +1944,18 @@ void OpenText(){
 		pfd->lpVtbl->Release(pfd);
 	}
 }
+void ToggleGreyscale();
 Button buttons[] = {
-	//0x7B9944 | (RR_DISH<<24)
-	{50,-16,46,12,12,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
-	{50,-16-28,46,12,12,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
+	{50,-14,46,10,10,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
+	{50,-14-26,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
+	{50,-14-52,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
 };
+void ToggleGreyscale(){
+	greyscale = !greyscale;
+	buttons[2].string = greyscale ? L"Greyscale: On" : L"Greyscale: Off";
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
 bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
 }
@@ -2025,15 +2094,13 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-		if (outputTexture.id){
-			glUseProgram(TextureShader.id);
-			glUniform1i(TextureShader.uTex,0);
-			glBindTexture(GL_TEXTURE_2D,outputTexture.id);
-			float width = min(clientWidth,outputTexture.width);
-			float height = width * ((float)outputTexture.height/(float)outputTexture.width);
+		if (imagePathLen){
+			float totalHeight = (float)images[0].image.height*COUNT(images);
+			float width = min(clientWidth,images[0].image.width);
+			float height = width * (totalHeight/(float)images[0].image.width);
 			if (height > clientHeight){
 				height = clientHeight;
-				width = height * ((float)outputTexture.width/(float)outputTexture.height);
+				width = height * ((float)images[0].image.width/totalHeight);
 			}
 			width *= scale;
 			height *= scale;
@@ -2042,15 +2109,22 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 				pos[1] = (clientHeight-(int)height)/2;
 				pos[2] = -1;
 			}
-			float mata[16],matb[16],matc[16];
-			Float4x4Scale(matb,width,height,1);
-			Float4x4TranslationV(mata,pos);
-			Float4x4Multiply(mata,matb,matc);
-			Float4x4Multiply(ortho,matc,mata);
-			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,mata);
+			
+			glUseProgram(TextureShader.id);
+			glUniform1i(TextureShader.uTex,0);
 			glBindBuffer(GL_ARRAY_BUFFER,imageQuad.vertexBuffer);
 			TextureShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
+			float mata[16],matb[16],matc[16];
+			float individualHeight = height/COUNT(images);
+			for (int i = 0; i < COUNT(images); i++){
+				glBindTexture(GL_TEXTURE_2D,images[i].texture.id);
+				Float4x4Scale(matb,width,individualHeight,1);
+				Float4x4Translation(mata,pos[0],pos[1]+i*individualHeight,pos[2]);
+				Float4x4Multiply(mata,matb,matc);
+				Float4x4Multiply(ortho,matc,mata);
+				glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,mata);
+				glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
+			}
 		}
 
 		glUseProgram(RoundedRectangleShader.id);
