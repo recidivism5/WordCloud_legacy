@@ -178,6 +178,11 @@ size_t fnv1a(size_t keylen, char *key){
 	(list)->buckets = 0;\
 	(list)->first = 0;\
 	(list)->last = 0;
+#define LINKED_HASHLIST_FREE(list)\
+	if ((list)->total){\
+		free((list)->buckets);\
+		LINKED_HASHLIST_INIT(list);\
+	}
 #define LINKED_HASHLIST_IMPLEMENTATION(type)\
 typedef struct type##LinkedHashListBucket {\
 	struct type##LinkedHashListBucket *prev, *next;\
@@ -204,7 +209,7 @@ type##LinkedHashListBucket *type##LinkedHashListGetBucket(type##LinkedHashList *
 }\
 type *type##LinkedHashListGet(type##LinkedHashList *list, size_t keylen, char *key){\
 	type##LinkedHashListBucket *bucket = type##LinkedHashListGetBucket(list,keylen,key);\
-	if (bucket->keylen > 0) return &bucket->value;\
+	if (bucket && bucket->keylen > 0) return &bucket->value;\
 	else return 0;\
 }\
 type *type##LinkedHashListNew(type##LinkedHashList *list, size_t keylen, char *key){\
@@ -1937,7 +1942,7 @@ int gaussianBlurStrength = 9;
 int quantizeDivisions = 4;
 int rectangleDecomposeSeed;
 int rectangleDecomposeMinDim = 25;
-int rectangleDecomposeSlop = 5;
+int rectangleDecomposeSlop = 0;
 
 HCURSOR cursorArrow, cursorFinger, cursorPan;
 int scale = 1;
@@ -2015,6 +2020,15 @@ void OpenImage(){
 		pfd->lpVtbl->Release(pfd);
 	}
 }
+LINKED_HASHLIST_IMPLEMENTATION(int)
+typedef struct {
+	int keylen;
+	char *key;
+	int value;
+} IntBucket;
+int CompareIntBuckets(IntBucket *a, IntBucket *b){
+	return b->value - a->value;
+}
 void OpenText(){
 	IFileDialog *pfd;
 	IShellItem *psi;
@@ -2028,6 +2042,43 @@ void OpenText(){
 			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
 				if (text) free(text);
 				text = LoadFileW(path,&textLen);
+
+				//parse text
+				intLinkedHashList hl = {0};
+				char *prev = text;
+				char *cur = text;
+				char *end = text+textLen;
+				while (1){
+					while (cur != end){
+						if (IsCharAlphaNumericA(*cur)) break;
+						cur++;
+					}
+					if (cur == end) break;
+					prev = cur;
+					while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
+					int len = cur-prev;
+					int *i = intLinkedHashListGet(&hl,len,prev);
+					if (!i){
+						i = intLinkedHashListNew(&hl,len,prev);
+						*i = 1;
+					} else {
+						(*i)++;
+					}
+				}
+				IntBucket *ib = malloc(hl.used*sizeof(*ib));
+				int i = 0;
+				for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
+					ib[i].keylen = b->keylen;
+					ib[i].key = b->key;
+					ib[i].value = b->value;
+					i++;
+				}
+				qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
+				for (i = 0; i < hl.used; i++){
+					printf("%.*s: %d\n",ib[i].keylen,ib[i].key,ib[i].value);
+				}
+				LINKED_HASHLIST_FREE(&hl);
+
 				wcscpy(textPath,path);
 				textPathLen = wcslen(textPath);
 				InvalidateRect(gwnd,0,0);
