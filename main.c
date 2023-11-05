@@ -1862,7 +1862,7 @@ void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 								if (lim != img->height && abs(j-lim) > slop){
 									j = lim;
 									goto L0;
-								} else if (lim == img->height){
+								} else {
 									lim = j;
 								}
 							}
@@ -1876,7 +1876,7 @@ void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 								if (lim != img->width && abs(i-lim) > slop){
 									i = lim;
 									goto L0;
-								} else if (lim == img->width){
+								} else {
 									lim = i;
 								}
 							}
