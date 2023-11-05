@@ -2065,20 +2065,22 @@ void OpenText(){
 						(*i)++;
 					}
 				}
-				IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
-				int i = 0;
-				for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
-					ib[i].keylen = b->keylen;
-					ib[i].key = b->key;
-					ib[i].value = b->value;
-					i++;
+				if (hl.used){
+					IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
+					int i = 0;
+					for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
+						ib[i].keylen = b->keylen;
+						ib[i].key = b->key;
+						ib[i].value = b->value;
+						i++;
+					}
+					qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
+					for (i = 0; i < hl.used; i++){
+						printf("%.*s: %d\n",ib[i].keylen,ib[i].key,ib[i].value);
+					}
+					free(ib);
+					free(hl.buckets);
 				}
-				qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
-				for (i = 0; i < hl.used; i++){
-					printf("%.*s: %d\n",ib[i].keylen,ib[i].key,ib[i].value);
-				}
-				free(ib);
-				LINKED_HASHLIST_FREE(&hl);
 
 				wcscpy(textPath,path);
 				textPathLen = wcslen(textPath);
