@@ -124,6 +124,12 @@ int randint(int n){
 	}
 }
 
+void StringToLower(size_t len, char *str){
+	for (size_t i = 0; i < len; i++){
+		str[i] = tolower(str[i]);
+	}
+}
+
 #define LIST_INIT(list)\
 	(list)->total = 0;\
 	(list)->used = 0;\
@@ -2029,6 +2035,44 @@ typedef struct {
 int CompareIntBuckets(IntBucket *a, IntBucket *b){
 	return b->value - a->value;
 }
+enum WordTypes {
+	NOUN,
+	VERB,
+	ADVERB,
+	ADJECTIVE,
+	CONJUNCTION,
+	ABBREVIATION,
+	PREPOSITION,
+	PRONOUN,
+	INTERJECTION,
+};
+typedef struct {
+	size_t len;
+	char *ptr;
+} Bytes;
+typedef struct {
+	char *prev, *cur, *end;
+} Lexer;
+void GetWord(Lexer *l, Bytes *w){
+	while (1){
+		if (l->cur == l->end || *l->cur == '\r' || *l->cur == '\n'){
+			w->len = 0;
+			w->ptr = 0;
+			return;
+		}
+		if (IsCharAlphaNumericA(*l->cur)) break;
+		l->cur++;
+	}
+	l->prev = l->cur;
+	while (l->cur != l->end && IsCharAlphaNumericA(*l->cur)) l->cur++;
+	w->len = l->cur-l->prev;
+	w->ptr = l->prev;
+}
+void AdvanceLine(Lexer *l){
+	while (l->cur != l->end && !(*l->cur == '\r' || *l->cur == '\n')) l->cur++;
+	while (l->cur != l->end && !IsCharAlphaNumericA(*l->cur)) l->cur++;
+}
+intLinkedHashList dictionary;
 void OpenText(){
 	IFileDialog *pfd;
 	IShellItem *psi;
@@ -2057,12 +2101,16 @@ void OpenText(){
 					prev = cur;
 					while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
 					int len = cur-prev;
-					int *i = intLinkedHashListGet(&hl,len,prev);
-					if (!i){
-						i = intLinkedHashListNew(&hl,len,prev);
-						*i = 1;
-					} else {
-						(*i)++;
+					StringToLower(len,prev);
+					int *i = intLinkedHashListGet(&dictionary,len,prev);
+					if (i && *i == NOUN){
+						i = intLinkedHashListGet(&hl,len,prev);
+						if (!i){
+							i = intLinkedHashListNew(&hl,len,prev);
+							*i = 1;
+						} else {
+							(*i)++;
+						}
 					}
 				}
 				if (hl.used){
@@ -2166,7 +2214,7 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		hdc = GetDC(hwnd);
 		RECT wr;
 		GetWindowRect(hwnd,&wr);
-		SetWindowPos(hwnd,0,wr.left,wr.top,wr.right-wr.left,wr.bottom-wr.top,SWP_FRAMECHANGED|SWP_NOMOVE|SWP_NOSIZE);//this is a hack to prevent the single white frame when the window first appears
+		SetWindowPos(hwnd,0,wr.left,wr.top,wr.right-wr.left,wr.bottom-wr.top,SWP_FRAMECHANGED|SWP_NOMOVE|SWP_NOSIZE);//This is a hack to prevent the single white frame when the window first appears. It also causes a WM_SIZE to be sent before the first WM_PAINT, so we can resize our viewport and ortho matrix in the WM_SIZE handler instead of in WM_PAINT.
 		break;
 	}
 	case WM_DESTROY:
@@ -2384,6 +2432,98 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	GenCachedFont(&font,L"Segoe UI",12);
 
 	rectangleDecomposeSeed = rand();
+
+	size_t dictSize;
+	char *dict = LoadFileW(L"dict.txt",&dictSize);
+	Lexer lexer = {
+		.prev = dict,
+		.cur = dict,
+		.end = dict+dictSize
+	};
+	while (lexer.cur != lexer.end){
+		Bytes word,type;
+		GetWord(&lexer,&word);
+		GetWord(&lexer,&type);
+		if (word.len && type.len){
+			StringToLower(word.len,word.ptr);
+			StringToLower(type.len,type.ptr);
+			//lower case the words so we can use switches
+			/*
+			NOUN, n
+			VERB, v
+			ADVERB, adv
+			ADJECTIVE, adj
+			CONJUNCTION, conj
+			ABBREVIATION, abbr
+			PREPOSITION, prep
+			PRONOUN, pron
+			INTERJECTION, int
+			*/
+			int typeVal = -1;
+			switch (type.len){
+				case 1:
+					switch(type.ptr[0]){
+						case 'n':
+							typeVal = NOUN;
+							break;
+						case 'v':
+							typeVal = VERB;
+							break;
+					}
+					break;
+				case 3:
+					switch(type.ptr[0]){
+						case 'a':
+							if (type.ptr[1] == 'd'){
+								switch(type.ptr[2]){
+									case 'j':
+										typeVal = ADJECTIVE;
+										break;
+									case 'v':
+										typeVal = ADVERB;
+										break;
+								}
+							}
+							break;
+						case 'i':
+							if (memcmp(type.ptr+1,"nt",2)){
+								typeVal = INTERJECTION;
+							}
+							break;
+					}
+				case 4:
+					switch(type.ptr[0]){
+						case 'a':
+							if (!memcmp(type.ptr+1,"bbr",3)){
+								typeVal = ABBREVIATION;
+							}
+							break;
+						case 'c':
+							if (!memcmp(type.ptr+1,"onj",3)){
+								typeVal = CONJUNCTION;
+							}
+							break;
+						case 'p':
+							if (type.ptr[1] == 'r'){
+								if (!memcmp(type.ptr+2,"ep",2)){
+									typeVal = PREPOSITION;
+								} else if (!memcmp(type.ptr+2,"on",2)){
+									typeVal = PRONOUN;
+								}
+							}
+							break;
+					}
+			}
+			if (typeVal >= 0){
+				int *i = intLinkedHashListGet(&dictionary,word.len,word.ptr);
+				if (!i){
+					i = intLinkedHashListNew(&dictionary,word.len,word.ptr);
+				}
+				*i = typeVal;
+			}
+		}
+		AdvanceLine(&lexer);
+	}
 
 	int argc;
 	WCHAR **argv = CommandLineToArgvW(GetCommandLineW(),&argc);
