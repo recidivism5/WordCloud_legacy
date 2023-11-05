@@ -1667,42 +1667,6 @@ HWND DarkGLMakeWindow(int iconId, WCHAR *title, int clientWidth, int clientHeigh
 	return hwnd;
 }
 
-WCHAR gpath[MAX_PATH+16];
-HWND gwnd;
-HDC hdc;
-int clientWidth = 800, clientHeight = 600;
-float ortho[16];
-CachedFont font;
-
-typedef struct {
-	GLuint vertexBuffer;
-	int vertexCount;
-} CachedMesh;
-CachedMesh imageQuad;
-typedef struct {
-	Image image;
-	Texture texture;
-} ImageTexture;
-ImageTexture images[5];
-bool greyscale = false;
-int gaussianBlurStrength = 9;
-int quantizeDivisions = 4;
-int rectangleDecomposeAreaThreshold = 25;
-
-HCURSOR cursorArrow, cursorFinger, cursorPan;
-int scale = 1;
-bool interpolation = false;
-float pos[3];
-bool pan = false;
-POINT panPoint;
-float originalPos[3];
-WCHAR imagePath[MAX_PATH];
-int imagePathLen;
-WCHAR textPath[MAX_PATH];
-int textPathLen;
-char *text;
-size_t textLen;
-
 /****************** Image Processing */
 void GreyScale(Image *img){
 	for (int i = 0; i < img->width*img->height; i++){
@@ -1873,6 +1837,121 @@ void GreyScaleQuantize(Image *img, int divisions){
 	free(invals);
 	free(outvals);
 }
+typedef struct {
+	RECT rect;
+	uint32_t color;
+} ColorRect;
+LIST_IMPLEMENTATION(ColorRect)
+void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
+	LIST_FREE(list);
+	//well we need some way to mark taken rectangles
+	//alpha at the moment, idk. For jpg it's clearly getting filled in with 255s
+	//we're just gonna set alpha to zero for taken rectangles
+	for (int y = 0; y < img->height; y++){
+		for (int x = 0; x < img->width; x++){
+			uint32_t c = img->pixels[y*img->width+x];
+			if (ALPHA(c)){
+				bool vertical = randint(2);
+				int i, j;
+				int lim;
+				if (vertical){
+					lim = img->height;
+					for (i = x; i < img->width; i++){
+						for (j = y; j < lim; j++){
+							if (img->pixels[j*img->width+i] != c){
+								if (lim != img->height && abs(j-lim) > slop){
+									j = lim;
+									goto L0;
+								} else {
+									lim = j;
+								}
+							}
+						}
+					}
+				} else {
+					lim = img->width;
+					for (j = y; j < img->height; j++){
+						for (i = x; i < lim; i++){
+							if (img->pixels[j*img->width+i] != c){
+								if (lim != img->width && abs(i-lim) > slop){
+									i = lim;
+									goto L0;
+								} else {
+									lim = i;
+								}
+							}
+						}
+					}
+				}
+			L0:;
+				int width = i-x;
+				int height = j-y;
+				if (width >= minDim && height >= minDim){
+					ColorRect *r = ColorRectListMakeRoom(list,1);
+					r->rect.left = x;
+					r->rect.right = i;
+					r->rect.bottom = y;
+					r->rect.top = j;
+					r->color = c;
+					list->used++;
+
+					for (int b = y; b < j; b++){
+						for (int a = x; a < i; a++){
+							img->pixels[b*img->width+a] = 0;
+						}
+					}
+				}
+			}
+		}
+	}
+	memset(img->pixels,0,img->width*img->height*sizeof(*img->pixels));
+	for (ColorRect *r = list->elements; r < list->elements+list->used; r++){
+		for (int y = r->rect.bottom; y < r->rect.top; y++){
+			for (int x = r->rect.left; x < r->rect.right; x++){
+				img->pixels[y*img->width+x] = r->color;
+			}
+		}
+	}
+}
+
+/********************** DarkWolken */
+WCHAR gpath[MAX_PATH+16];
+HWND gwnd;
+HDC hdc;
+int clientWidth = 800, clientHeight = 600;
+float ortho[16];
+CachedFont font;
+
+typedef struct {
+	GLuint vertexBuffer;
+	int vertexCount;
+} CachedMesh;
+CachedMesh imageQuad;
+typedef struct {
+	Image image;
+	Texture texture;
+} ImageTexture;
+ImageTexture images[5];
+bool greyscale = false;
+int gaussianBlurStrength = 9;
+int quantizeDivisions = 4;
+int rectangleDecomposeSeed;
+int rectangleDecomposeMinDim = 25;
+int rectangleDecomposeSlop = 5;
+
+HCURSOR cursorArrow, cursorFinger, cursorPan;
+int scale = 1;
+bool interpolation = false;
+float pos[3];
+bool pan = false;
+POINT panPoint;
+float originalPos[3];
+WCHAR imagePath[MAX_PATH];
+int imagePathLen;
+WCHAR textPath[MAX_PATH];
+int textPathLen;
+char *text;
+size_t textLen;
 
 void Update(){
 	size_t size = images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels);
@@ -1885,11 +1964,14 @@ void Update(){
 	Quantize(&images[2].image,quantizeDivisions);
 	memcpy(images[3].image.pixels,images[2].image.pixels,size);
 
-	//RectangleDecompose(&images[3].image,rectangleDecomposeAreaThreshold);
+	srand(rectangleDecomposeSeed);
+	ColorRectList crl = {0};
+	RectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim,rectangleDecomposeSlop);
 
 	//rectangle decompose, for each rectangle randomly choose whether to first expand along x or y. Expand along that dimension until you hit something, then expand along the other.
 	//this way you can get random results each time
 	//also pick the word for each rectangle with some randomness if constraints allow it.
+	//allow for some configurable amount of slop for rectangles.
 
 	for (ImageTexture *it = images; it < images+COUNT(images); it++){
 		TextureFromImage(&it->texture,&it->image,false);
@@ -1967,11 +2049,50 @@ void DecrementGaussianBlurStrength(){
 	Update();
 	InvalidateRect(gwnd,0,0);
 }
+void IncrementQuantizeDivisions(){
+	quantizeDivisions = min(50,quantizeDivisions+1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void DecrementQuantizeDivisions(){
+	quantizeDivisions = max(0,quantizeDivisions-1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void RandomizeRectSeed(){
+	rectangleDecomposeSeed = rand();
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void IncrementMinDim(){
+	rectangleDecomposeMinDim = min(2000,rectangleDecomposeMinDim+5);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void DecrementMinDim(){
+	rectangleDecomposeMinDim = max(0,rectangleDecomposeMinDim-5);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void IncrementSlop(){
+	rectangleDecomposeSlop = min(100,rectangleDecomposeSlop+1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
+void DecrementSlop(){
+	rectangleDecomposeSlop = max(0,rectangleDecomposeSlop-1);
+	Update();
+	InvalidateRect(gwnd,0,0);
+}
 Button buttons[] = {
 	{50,-14,46,10,10,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
 	{50,-14-26*1,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
 	{50,-14-26*2,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
 	{14,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementGaussianBlurStrength},{200,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementGaussianBlurStrength},
+	{14,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementQuantizeDivisions},{200,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementQuantizeDivisions},
+	{50+68-46,-14-26*5,68,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Randomize Rectangles",RandomizeRectSeed},
+	{14,-14-26*6,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementMinDim},{200,-14-26*6,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementMinDim},
+	{14,-14-26*7,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementSlop},{200,-14-26*7,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementSlop},
 };
 void ToggleGreyscale(){
 	greyscale = !greyscale;
@@ -2172,6 +2293,9 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			AppendCenteredStringMesh(&tvl,&font,b->x,clientHeight-1+b->y,1,b->string,wcslen(b->string));
 		}
 		AppendFormatCenteredStringMesh(&tvl,&font,buttons[3].x + (buttons[4].x-buttons[3].x)/2,clientHeight-1+buttons[3].y,0,L"Gaussian Blur Strength: %d",gaussianBlurStrength);
+		AppendFormatCenteredStringMesh(&tvl,&font,buttons[5].x + (buttons[6].x-buttons[5].x)/2,clientHeight-1+buttons[5].y,0,L"Quantize Divisions: %d",quantizeDivisions);
+		AppendFormatCenteredStringMesh(&tvl,&font,buttons[8].x + (buttons[9].x-buttons[8].x)/2,clientHeight-1+buttons[8].y,0,L"Rect Min Dim: %d",rectangleDecomposeMinDim);
+		AppendFormatCenteredStringMesh(&tvl,&font,buttons[10].x + (buttons[11].x-buttons[10].x)/2,clientHeight-1+buttons[10].y,0,L"Rect Slop: %d",rectangleDecomposeSlop);
 		if (imagePathLen){
 			AppendStringMesh(&tvl,&font,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0,imagePath,imagePathLen);
 		}
@@ -2204,6 +2328,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	DarkGLMakeWindow(RID_ICON,L"DarkWolken",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
 	GenCachedFont(&font,L"Segoe UI",12);
+
+	rectangleDecomposeSeed = rand();
 
 	int argc;
 	WCHAR **argv = CommandLineToArgvW(GetCommandLineW(),&argc);
