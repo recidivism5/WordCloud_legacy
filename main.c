@@ -2065,7 +2065,7 @@ void OpenText(){
 						(*i)++;
 					}
 				}
-				IntBucket *ib = malloc(hl.used*sizeof(*ib));
+				IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
 				int i = 0;
 				for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
 					ib[i].keylen = b->keylen;
@@ -2077,6 +2077,7 @@ void OpenText(){
 				for (i = 0; i < hl.used; i++){
 					printf("%.*s: %d\n",ib[i].keylen,ib[i].key,ib[i].value);
 				}
+				free(ib);
 				LINKED_HASHLIST_FREE(&hl);
 
 				wcscpy(textPath,path);
