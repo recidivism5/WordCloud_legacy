@@ -2072,7 +2072,8 @@ void AdvanceLine(Lexer *l){
 	while (l->cur != l->end && !(*l->cur == '\r' || *l->cur == '\n')) l->cur++;
 	while (l->cur != l->end && !IsCharAlphaNumericA(*l->cur)) l->cur++;
 }
-intLinkedHashList dictionary;
+Bytes dictBytes;
+intLinkedHashList dict;
 void OpenText(){
 	IFileDialog *pfd;
 	IShellItem *psi;
@@ -2102,7 +2103,7 @@ void OpenText(){
 					while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
 					int len = cur-prev;
 					StringToLower(len,prev);
-					int *i = intLinkedHashListGet(&dictionary,len,prev);
+					int *i = intLinkedHashListGet(&dict,len,prev);
 					if (i && *i == NOUN){
 						i = intLinkedHashListGet(&hl,len,prev);
 						if (!i){
@@ -2433,12 +2434,11 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 
 	rectangleDecomposeSeed = rand();
 
-	size_t dictSize;
-	char *dict = LoadFileW(L"dict.txt",&dictSize);
+	dictBytes.ptr = LoadFileW(L"dict.txt",&dictBytes.len);
 	Lexer lexer = {
-		.prev = dict,
-		.cur = dict,
-		.end = dict+dictSize
+		.prev = dictBytes.ptr,
+		.cur = dictBytes.ptr,
+		.end = dictBytes.ptr+dictBytes.len
 	};
 	while (lexer.cur != lexer.end){
 		Bytes word,type;
@@ -2515,9 +2515,9 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 					}
 			}
 			if (typeVal >= 0){
-				int *i = intLinkedHashListGet(&dictionary,word.len,word.ptr);
+				int *i = intLinkedHashListGet(&dict,word.len,word.ptr);
 				if (!i){
-					i = intLinkedHashListNew(&dictionary,word.len,word.ptr);
+					i = intLinkedHashListNew(&dict,word.len,word.ptr);
 				}
 				*i = typeVal;
 			}
