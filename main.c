@@ -57,6 +57,11 @@ int _fltused;
 #define GREENF(c) (GREEN(c)/255.0f)
 #define ALPHAF(c) (ALPHA(c)/255.0f)
 
+typedef struct {
+	size_t len;
+	char *ptr;
+} Bytes;
+
 void FatalErrorA(char *format, ...){
 	va_list args;
 	va_start(args,format);
@@ -1368,6 +1373,9 @@ void GenCachedFont(CachedFont *cf, WCHAR *name, int height){
 	bmi.bmiColors[1].rgbGreen = 0xff;
 	bmi.bmiColors[2].rgbBlue = 0xff;
 	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&img.pixels,0,0);
+	if (!hbm){
+		FatalErrorA("Failed to create %dx%d 32 bit bitmap.",img.width,img.height);
+	}
 	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
 
 	x = 0; y = 0; gy = 0;
@@ -1961,8 +1969,153 @@ WCHAR imagePath[MAX_PATH];
 int imagePathLen;
 WCHAR textPath[MAX_PATH];
 int textPathLen;
-char *text;
-size_t textLen;
+Bytes gtext;
+
+LINKED_HASHLIST_IMPLEMENTATION(int)
+typedef struct {
+	int keylen;
+	char *key;
+	int value;
+} IntBucket;
+typedef struct {
+	int keylen;
+	char *key;
+	float value;
+} FloatBucket;
+int CompareIntBuckets(IntBucket *a, IntBucket *b){
+	return b->value - a->value;
+}
+enum WordType {
+	NOUN = 1,
+	VERB = NOUN<<1,
+	ADVERB = VERB<<1,
+	ADJECTIVE = ADVERB<<1,
+	CONJUNCTION = ADJECTIVE<<1,
+	ABBREVIATION = CONJUNCTION<<1,
+	PREPOSITION = ABBREVIATION<<1,
+	PRONOUN = PREPOSITION<<1,
+	INTERJECTION = PRONOUN<<1,
+};
+typedef struct {
+	char *prev, *cur, *end;
+} Lexer;
+void GetWord(Lexer *l, Bytes *w){
+	while (1){
+		if (l->cur == l->end || *l->cur == '\r' || *l->cur == '\n'){
+			w->len = 0;
+			w->ptr = 0;
+			return;
+		}
+		if (IsCharAlphaNumericA(*l->cur)) break;
+		l->cur++;
+	}
+	l->prev = l->cur;
+	while (l->cur != l->end && IsCharAlphaNumericA(*l->cur)) l->cur++;
+	w->len = l->cur-l->prev;
+	w->ptr = l->prev;
+}
+void AdvanceLine(Lexer *l){
+	while (l->cur != l->end && !(*l->cur == '\r' || *l->cur == '\n')) l->cur++;
+	while (l->cur != l->end && !IsCharAlphaNumericA(*l->cur)) l->cur++;
+}
+Bytes dictBytes;
+intLinkedHashList dict;
+typedef struct {
+	size_t len;
+	char *ptr;
+	float aspect;
+} AspectWord;
+int CompareAspectWords(AspectWord *a, AspectWord *b){
+	return (a->aspect > b->aspect) - (a->aspect < b->aspect);
+}
+typedef struct {
+	size_t len;
+	AspectWord *words;
+} WordArray;
+/*
+WordsByAspect:
+	Returns a WordArray of the n most or least prevalent words from *text*
+	matching *typeFlags* (OR'd combination of enum WordType values),sorted
+	from greatest to least aspect ratio using the font specified by
+	*fontName* and the case specified by *wordCase*.
+	If *top* > 0, the top *top* words are used.
+	If *top* == 0, all words are used.
+	if *top* < 0, the bottom abs(*top*) words are used.
+*/
+typedef enum {
+	LOWER_CASE,
+	CAPITALIZED,
+	UPPER_CASE
+} WordCase;
+void WordsByAspect(WordArray *wa, Bytes *text, int typeFlags, int top, char *fontName, WordCase wordCase){
+	intLinkedHashList hl = {0};
+	char *prev = text->ptr;
+	char *cur = text->ptr;
+	char *end = text->ptr+text->len;
+	while (1){
+		while (cur != end){
+			if (IsCharAlphaNumericA(*cur)) break;
+			cur++;
+		}
+		if (cur == end) break;
+		prev = cur;
+		while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
+		int len = cur-prev;
+		if (len > 1){
+			StringToLower(len,prev);
+			int *i = intLinkedHashListGet(&dict,len,prev);
+			if (i && ((*i) & typeFlags)){
+				i = intLinkedHashListGet(&hl,len,prev);
+				if (!i){
+					i = intLinkedHashListNew(&hl,len,prev);
+					*i = 1;
+				} else {
+					(*i)++;
+				}
+			}
+		}
+	}
+	if (hl.used){
+		IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
+		int i = 0;
+		for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
+			ib[i].keylen = b->keylen;
+			ib[i].key = b->key;
+			ib[i].value = b->value;
+			i++;
+		}
+		qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
+		
+		//we're ignoring top and case for now
+		//make new list sorted by aspect ratio
+		HDC hdcScreen = GetDC(NULL);
+		HDC hdcBmp = CreateCompatibleDC(hdcScreen);
+		HFONT hfont = CreateFontA(-24,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
+		HFONT oldFont = SelectObject(hdcBmp,hfont);
+		SetBkMode(hdcBmp,TRANSPARENT);
+		SetTextColor(hdcBmp,RGB(255,255,255));
+		wa->len = hl.used;
+		wa->words = MallocOrDie(hl.used*sizeof(*wa->words));
+		for (int i = 0; i < hl.used; i++){
+			wa->words[i].len = ib[i].keylen;
+			wa->words[i].ptr = ib[i].key;
+			RECT r = {0};
+			DrawTextW(hdcBmp,ib[i].key,ib[i].keylen,&r,DT_CALCRECT|DT_NOPREFIX);
+			wa->words[i].aspect = (float)r.right/r.bottom;
+		}
+		qsort(wa->words,hl.used,sizeof(*wa->words),CompareAspectWords);//the crt has bsearch too
+		for (int i = 0; i < hl.used; i++){
+			printf("%.*s: %f\n",wa->words[i].len,wa->words[i].ptr,wa->words[i].aspect);
+		}
+		SelectObject(hdcBmp,oldFont);
+		DeleteObject(hfont);
+		DeleteDC(hdcBmp);
+		ReleaseDC(NULL,hdcScreen);
+
+		free(ib);
+		free(hl.buckets);
+	}
+}
 
 void Update(){
 	size_t size = images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels);
@@ -1979,10 +2132,13 @@ void Update(){
 	ColorRectList crl = {0};
 	RectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim,rectangleDecomposeSlop);
 
-	//rectangle decompose, for each rectangle randomly choose whether to first expand along x or y. Expand along that dimension until you hit something, then expand along the other.
-	//this way you can get random results each time
-	//also pick the word for each rectangle with some randomness if constraints allow it.
-	//allow for some configurable amount of slop for rectangles.
+	if (gtext.ptr){
+		WordArray wa;
+		WordsByAspect(&wa,&gtext,NOUN|VERB,0,"Consolas",LOWER_CASE);
+		if (wa.len){
+			free(wa.words);
+		}
+	}
 
 	for (ImageTexture *it = images; it < images+COUNT(images); it++){
 		TextureFromImage(&it->texture,&it->image,false);
@@ -2026,54 +2182,6 @@ void OpenImage(){
 		pfd->lpVtbl->Release(pfd);
 	}
 }
-LINKED_HASHLIST_IMPLEMENTATION(int)
-typedef struct {
-	int keylen;
-	char *key;
-	int value;
-} IntBucket;
-int CompareIntBuckets(IntBucket *a, IntBucket *b){
-	return b->value - a->value;
-}
-enum WordTypes {
-	NOUN,
-	VERB,
-	ADVERB,
-	ADJECTIVE,
-	CONJUNCTION,
-	ABBREVIATION,
-	PREPOSITION,
-	PRONOUN,
-	INTERJECTION,
-};
-typedef struct {
-	size_t len;
-	char *ptr;
-} Bytes;
-typedef struct {
-	char *prev, *cur, *end;
-} Lexer;
-void GetWord(Lexer *l, Bytes *w){
-	while (1){
-		if (l->cur == l->end || *l->cur == '\r' || *l->cur == '\n'){
-			w->len = 0;
-			w->ptr = 0;
-			return;
-		}
-		if (IsCharAlphaNumericA(*l->cur)) break;
-		l->cur++;
-	}
-	l->prev = l->cur;
-	while (l->cur != l->end && IsCharAlphaNumericA(*l->cur)) l->cur++;
-	w->len = l->cur-l->prev;
-	w->ptr = l->prev;
-}
-void AdvanceLine(Lexer *l){
-	while (l->cur != l->end && !(*l->cur == '\r' || *l->cur == '\n')) l->cur++;
-	while (l->cur != l->end && !IsCharAlphaNumericA(*l->cur)) l->cur++;
-}
-Bytes dictBytes;
-intLinkedHashList dict;
 void OpenText(){
 	IFileDialog *pfd;
 	IShellItem *psi;
@@ -2085,54 +2193,11 @@ void OpenText(){
 		pfd->lpVtbl->Show(pfd,gwnd);
 		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
 			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
-				if (text) free(text);
-				text = LoadFileW(path,&textLen);
-
-				//parse text
-				intLinkedHashList hl = {0};
-				char *prev = text;
-				char *cur = text;
-				char *end = text+textLen;
-				while (1){
-					while (cur != end){
-						if (IsCharAlphaNumericA(*cur)) break;
-						cur++;
-					}
-					if (cur == end) break;
-					prev = cur;
-					while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
-					int len = cur-prev;
-					StringToLower(len,prev);
-					int *i = intLinkedHashListGet(&dict,len,prev);
-					if (i && *i == NOUN){
-						i = intLinkedHashListGet(&hl,len,prev);
-						if (!i){
-							i = intLinkedHashListNew(&hl,len,prev);
-							*i = 1;
-						} else {
-							(*i)++;
-						}
-					}
-				}
-				if (hl.used){
-					IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
-					int i = 0;
-					for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
-						ib[i].keylen = b->keylen;
-						ib[i].key = b->key;
-						ib[i].value = b->value;
-						i++;
-					}
-					qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
-					for (i = 0; i < hl.used; i++){
-						printf("%.*s: %d\n",ib[i].keylen,ib[i].key,ib[i].value);
-					}
-					free(ib);
-					free(hl.buckets);
-				}
-
+				if (gtext.ptr) free(gtext.ptr);
+				gtext.ptr = LoadFileW(path,&gtext.len);
 				wcscpy(textPath,path);
 				textPathLen = wcslen(textPath);
+				Update();
 				InvalidateRect(gwnd,0,0);
 				CoTaskMemFree(path);
 			}
