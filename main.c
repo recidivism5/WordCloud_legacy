@@ -2036,7 +2036,7 @@ typedef struct {
 WordsByAspect:
 	Returns a WordArray of the n most or least prevalent words from *text*
 	matching *typeFlags* (OR'd combination of enum WordType values),sorted
-	from greatest to least aspect ratio using the font specified by
+	from least to greatest aspect ratio using the font specified by
 	*fontName* and the case specified by *wordCase*.
 	If *top* > 0, the top *top* words are used.
 	If *top* == 0, all words are used.
@@ -2100,7 +2100,7 @@ void WordsByAspect(WordArray *wa, Bytes *text, int typeFlags, int top, char *fon
 			wa->words[i].len = ib[i].keylen;
 			wa->words[i].ptr = ib[i].key;
 			RECT r = {0};
-			DrawTextW(hdcBmp,ib[i].key,ib[i].keylen,&r,DT_CALCRECT|DT_NOPREFIX);
+			DrawTextA(hdcBmp,ib[i].key,ib[i].keylen,&r,DT_CALCRECT|DT_NOPREFIX);
 			wa->words[i].aspect = (float)r.right/r.bottom;
 		}
 		qsort(wa->words,hl.used,sizeof(*wa->words),CompareAspectWords);//the crt has bsearch too
@@ -2116,7 +2116,64 @@ void WordsByAspect(WordArray *wa, Bytes *text, int typeFlags, int top, char *fon
 		free(hl.buckets);
 	}
 }
+void WordReconstruct(Image *img, ColorRectList *crl, WordArray *wa, char *fontName){
+	HDC hdcScreen = GetDC(NULL);
+	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
+	BITMAPINFO_TRUECOLOR32 bmi = {0};
+	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth = img->width;
+	bmi.bmiHeader.biHeight = img->height;
+	bmi.bmiHeader.biPlanes = 1;
+	bmi.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS;
+	bmi.bmiHeader.biBitCount = 32;
+	bmi.bmiColors[0].rgbRed = 0xff;
+	bmi.bmiColors[1].rgbGreen = 0xff;
+	bmi.bmiColors[2].rgbBlue = 0xff;
+	uint32_t *pixels;
+	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&pixels,0,0);
+	if (!hbm){
+		FatalErrorA("Failed to create %dx%d 32 bit bitmap.",img->width,img->height);
+	}
+	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
+	for (ColorRect *cr = crl->elements; cr < crl->elements+crl->used; cr++){
+		RECT r = {
+			.left = cr->rect.left,
+			.right = cr->rect.right,
+			.top = img->height-cr->rect.top,
+			.bottom = img->height-(cr->rect.bottom+1)
+		};
+		int w = r.right-r.left;
+		int h = r.bottom-r.top;
+		float aspect = w > h ? (float)w/h : (float)h/w;
+		AspectWord *word = wa->words+1;
+		for (; word < wa->words+wa->len; word++){
+			if (word->aspect > aspect){
+				word--;
+				break;
+			}
+		}
+		int angle = 90*10;
+		HFONT hfont = CreateFontA(w > h ? -h : -w,0,w > h ? 0 : angle,w > h ? 0 : angle,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
+		HFONT oldFont = SelectObject(hdcBmp,hfont);
+		SetBkMode(hdcBmp,TRANSPARENT);
+		SetTextColor(hdcBmp,cr->color&0xffffff);
+		ExtTextOutA(hdcBmp,r.left,r.bottom,0,0,word->ptr,word->len,0);
+		SelectObject(hdcBmp,oldFont);
+		DeleteObject(hfont);
+	}
 
+	SelectObject(hdcBmp,hbmOld);
+	DeleteDC(hdcBmp);
+	ReleaseDC(NULL,hdcScreen);
+	for (size_t i = 0; i < img->width*img->height; i++){
+		uint8_t *p = pixels+i;
+		uint8_t s;
+		SWAP(s,p[0],p[2]);
+		p[3] = 255;//max(p[0],max(p[1],p[2]));
+	}
+	memcpy(img->pixels,pixels,img->width*img->height*sizeof(*img->pixels));
+	DeleteObject(hbm);
+}
 void Update(){
 	size_t size = images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels);
 	memcpy(images[1].image.pixels,images[0].image.pixels,size);
@@ -2135,6 +2192,7 @@ void Update(){
 	if (gtext.ptr){
 		WordArray wa;
 		WordsByAspect(&wa,&gtext,NOUN|VERB,0,"Consolas",LOWER_CASE);
+		WordReconstruct(&images[4].image,&crl,&wa,"Consolas");
 		if (wa.len){
 			free(wa.words);
 		}
