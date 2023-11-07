@@ -2157,7 +2157,7 @@ void WordReconstruct(Image *img, ColorRectList *crl, WordArray *wa, char *fontNa
 		HFONT oldFont = SelectObject(hdcBmp,hfont);
 		SetBkMode(hdcBmp,TRANSPARENT);
 		SetTextColor(hdcBmp,cr->color&0xffffff);
-		ExtTextOutA(hdcBmp,r.left,r.bottom,0,0,word->ptr,word->len,0);
+		ExtTextOutA(hdcBmp,r.left,w > h ? r.top : r.bottom,0,0,word->ptr,word->len,0);
 		SelectObject(hdcBmp,oldFont);
 		DeleteObject(hfont);
 	}
