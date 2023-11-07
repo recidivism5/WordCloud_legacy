@@ -1925,9 +1925,10 @@ void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 	}
 	memset(img->pixels,0,img->width*img->height*sizeof(*img->pixels));
 	for (ColorRect *r = list->elements; r < list->elements+list->used; r++){
+		uint32_t color = randint(255) | (randint(255)<<8) | (randint(255)<<16) | (255<<24);
 		for (int y = r->rect.bottom; y < r->rect.top; y++){
 			for (int x = r->rect.left; x < r->rect.right; x++){
-				img->pixels[y*img->width+x] = r->color;
+				img->pixels[y*img->width+x] = color;
 			}
 		}
 	}
