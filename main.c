@@ -291,34 +291,6 @@ void type##LinkedHashListRemove(type##LinkedHashList *list, size_t keylen, char 
 	}\
 }
 
-/***************************** RingBuffer */
-/*void RingBufferReset(RingBuffer *r){
-r->used = 0;
-r->writeIndex = 0;
-r->readIndex = 0;
-}
-void RingBufferInit(RingBuffer *r, size_t elementSize, int total, void *elements){
-r->elementSize = elementSize;
-r->total = total;
-r->elements = elements;
-RingBufferReset(r);
-}
-void* RingBufferGet(RingBuffer *r, int index){
-return ((char *)r->elements)+((r->readIndex+index)%r->total)*r->elementSize;
-}
-void *RingBufferIncrementWriteHead(RingBuffer *r){
-if (r->used == r->total) return 0;
-void *w = ((char *)r->elements)+(r->writeIndex%r->total)*r->elementSize;
-r->writeIndex = (r->writeIndex + 1) % r->total;
-r->used++;
-return w;
-}
-void RingBufferIncrementReadHead(RingBuffer *r){
-if (!r->used) return;
-r->readIndex = (r->readIndex + 1) % r->total;
-r->used--;
-}*/
-
 /***************************** Linear Algebra */
 #define LERP(a,b,t) ((a) + (t)*((b)-(a)))
 inline float Float3Dot(float a[3], float b[3]){
@@ -770,104 +742,6 @@ inline void Float4x4LookAtXYView(float m[16], float eye[3], float target[3]){//p
 	m[14] = kx*eye[0] + ky*eye[1] + kz*eye[2];
 	m[15] = 1.0f;
 }
-/*
-inline void Float4x4LookAtXYViewShake(Float4x4 *m, Float3 *eye, Float3 *target){
-Float4x4LookAtXY(m,eye,target);
-
-}
-Float4x4 mat4LookAtShake(FVec3 eye, FVec3 target, FVec3 shakeEuler){
-
-FVec3 z = fvec3Norm(fvec3Sub(eye,target)),
-x = fvec3Norm(fvec3Cross(z,(FVec3){0,1,0})),
-y = fvec3Cross(x,z);
-return mat4Mul(mat4Transpose(mat4Mul(eulerToFloat4x4(shakeEuler),mat4Basis(fvec3Negate(x),y,z))),mat4Pos(fvec3Negate(eye)));
-}
-Float4x4 eulerToFloat4x4(FVec3 e){
-return mat4Mul(mat4RotZ(e.z),mat4Mul(mat4RotY(e.y),mat4RotX(e.x)));
-}
-Float4x4 quatToFloat4x4(FVec4 q){
-Float4x4 m = mat4Identity();
-m.a0 = 1 - 2*(q.y*q.y + q.z*q.z);
-m.a1 = 2*(q.x*q.y + q.z*q.w);
-m.a2 = 2*(q.x*q.z - q.y*q.w);
-
-m.b0 = 2*(q.x*q.y - q.z*q.w);
-m.b1 = 1 - 2*(q.x*q.x + q.z*q.z);
-m.b2 = 2*(q.y*q.z + q.x*q.w);
-
-m.c0 = 2*(q.x*q.z + q.y*q.w);
-m.c1 = 2*(q.y*q.z - q.x*q.w);
-m.c2 = 1 - 2*(q.x*q.x + q.y*q.y);
-return m;
-}
-Float4x4 mat4MtwInverse(Float4x4 m){
-Float4x4 i = mat4TransposeMat3(m);
-i.d.vec3 = fvec3Negate(m.d.vec3);
-return i;
-}
-void mat4Print(Float4x4 m){
-for (int i = 0; i < 4; i++){
-printf("%f %f %f %f\n",m.arr[0*4+i],m.arr[1*4+i],m.arr[2*4+i],m.arr[3*4+i]);
-}
-}
-FVec3 fvec3Rotated(FVec3 v, FVec3 euler){
-return mat4MulFVec4(eulerToFloat4x4(euler),(FVec4){v.x,v.y,v.z,0.0f}).vec3;
-}
-FVec3 normalFromTriangle(FVec3 a, FVec3 b, FVec3 c){
-return fvec3Norm(fvec3Cross(fvec3Sub(b,a),fvec3Sub(c,a)));
-}
-int manhattanDistance(IVec3 a, IVec3 b){
-return abs(a.x-b.x)+abs(a.y-b.y)+abs(a.z-b.z);
-}
-Float4x4 getVP(Camera *c){
-return mat4Mul(mat4Persp(c->fov,c->aspect,0.01f,1024.0f),mat4Mul(mat4Transpose(eulerToFloat4x4(c->euler)),mat4Pos(fvec3Scale(c->position,-1))));
-}
-void rotateCamera(Camera *c, float dx, float dy, float sens){
-c->euler.y += sens * dx;
-c->euler.x += sens * dy;
-c->euler = clampEuler(c->euler);
-}
-//The following SAT implementation is modified from https://stackoverflow.com/a/52010428
-bool getSeparatingPlane(FVec3 RPos, FVec3 Plane, FVec3 *aNormals, FVec3 aHalfExtents, FVec3 *bNormals, FVec3 bHalfExtents){
-return (fabsf(fvec3Dot(RPos,Plane)) > 
-(fabsf(fvec3Dot(fvec3Scale(aNormals[0],aHalfExtents.x),Plane)) +
-fabsf(fvec3Dot(fvec3Scale(aNormals[1],aHalfExtents.y),Plane)) +
-fabsf(fvec3Dot(fvec3Scale(aNormals[2],aHalfExtents.z),Plane)) +
-fabsf(fvec3Dot(fvec3Scale(bNormals[0],bHalfExtents.x),Plane)) + 
-fabsf(fvec3Dot(fvec3Scale(bNormals[1],bHalfExtents.y),Plane)) +
-fabsf(fvec3Dot(fvec3Scale(bNormals[2],bHalfExtents.z),Plane))));
-}
-bool OBBsColliding(OBB *a, OBB *b){
-FVec3 RPos = fvec3Sub(b->position,a->position);
-Float4x4 aRot = eulerToFloat4x4(a->euler);
-FVec3 aNormals[3] = {
-aRot.a.vec3,
-aRot.b.vec3,
-aRot.c.vec3
-};
-Float4x4 bRot = eulerToFloat4x4(b->euler);
-FVec3 bNormals[3] = {
-bRot.a.vec3,
-bRot.b.vec3,
-bRot.c.vec3
-};
-return !(getSeparatingPlane(RPos,aNormals[0],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,aNormals[1],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,aNormals[2],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,bNormals[0],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,bNormals[1],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,bNormals[2],aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[0],bNormals[0]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[0],bNormals[1]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[0],bNormals[2]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[1],bNormals[0]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[1],bNormals[1]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[1],bNormals[2]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[2],bNormals[0]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[2],bNormals[1]),aNormals,a->halfExtents,bNormals,b->halfExtents) ||
-getSeparatingPlane(RPos,fvec3Cross(aNormals[2],bNormals[2]),aNormals,a->halfExtents,bNormals,b->halfExtents));
-}
-*/
 
 /******************* Files */
 char *LoadFileA(char *path, size_t *size){
