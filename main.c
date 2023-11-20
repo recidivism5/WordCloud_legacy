@@ -1861,7 +1861,7 @@ typedef struct {
 	uint32_t color;
 } ColorRect;
 LIST_IMPLEMENTATION(ColorRect)
-void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
+void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 	LIST_FREE(list);
 	//well we need some way to mark taken rectangles
 	//alpha at the moment, idk. For jpg it's clearly getting filled in with 255s
@@ -1870,7 +1870,7 @@ void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 		for (int x = 0; x < img->width; x++){
 			uint32_t c = img->pixels[y*img->width+x];
 			if (ALPHA(c)){
-				bool vertical = randint(2);
+				bool vertical = 0;//randint(2);
 				int i, j;
 				int lim;
 				if (vertical){
@@ -1929,6 +1929,56 @@ void RectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
 		for (int y = r->rect.bottom; y < r->rect.top; y++){
 			for (int x = r->rect.left; x < r->rect.right; x++){
 				img->pixels[y*img->width+x] = color;
+			}
+		}
+	}
+}
+typedef struct {
+	int x,y;
+} int2;
+LIST_IMPLEMENTATION(int2)
+typedef struct PCount{
+	struct PCount *parent;
+	int2List positions;
+	RECT boundingBox;
+} PCount;
+void RectangleDecompose(ColorRectList *list, Image *img, int minDim){
+	LIST_FREE(list);
+	/*
+		1. Find center of mass of largest contiguous region. If that point is not in the region, find the nearest point to it that is.
+		2. Expand a rectangle out from that point in all directions until it hits edges.
+		3. Go to 1 until the largest contiguous region has a dimension below minDim.
+	*/
+	int total = img->width*img->height;
+	PCount *pc = MallocOrDie(total*sizeof(*pc));
+	for (int y = 0; y < img->height; y++){
+		for (int x = 0; x < img->width; x++){
+			PCount *p = pc + y*img->width + x;
+			p->parent = p;
+			LIST_INIT(&p->positions);
+			int2 *i = int2ListMakeRoom(&p->positions,1);
+			i->x = x;
+			i->y = y;
+			p->positions.used++;
+		}
+	}
+	for (int y = 0; y < img->height; y++){
+		for (int x = 0; x < img->width; x++){
+			uint32_t p = img->pixels[y*img->width+x];
+			if (x > 0 && img->pixels[y*img->width+x-1]==p){
+				PCount *left = pc+y*img->width+x-1;
+				while (left->parent != left) left = left->parent;
+				pc[y*img->width+x].parent = left;
+				int2ListAppend(&left->positions,pc[y*img->width+x].positions.elements,pc[y*img->width+x].positions.used);
+				if (y > 0 && img->pixels[(y-1)*img->width+x]==p){
+					pc[(y-1)*img->width+x].parent = left;
+					int2ListAppend(&left->positions,pc[(y-1)*img->width+x].positions.elements,pc[(y-1)*img->width+x].positions.used);
+				}
+			} else if (y > 0 && img->pixels[(y-1)*img->width+x]==p){
+				PCount *down = pc+(y-1)*img->width+x;
+				while (down->parent != down) down = down->parent;
+				pc[y*img->width+x].parent = down;
+				int2ListAppend(&down->positions,pc[y*img->width+x].positions.elements,pc[y*img->width+x].positions.used);
 			}
 		}
 	}
@@ -2145,7 +2195,21 @@ void WordReconstruct(Image *img, ColorRectList *crl, WordArray *wa, char *fontNa
 		};
 		int w = r.right-r.left;
 		int h = r.bottom-r.top;
-		float aspect = w > h ? (float)w/h : (float)h/w;
+		bool horizontal = w > h;
+		float aspect = horizontal ? (float)w/h : (float)h/w;
+		int subdivisions = 1;
+		//need to make random subdivisions if aspect is greater than biggest available aspect
+		//also words should be merged by aspect and then chosen at random.
+		float biggestAspect = wa->words[wa->len-1].aspect;
+		while (aspect > wa->words[wa->len-1].aspect){
+			if (horizontal){
+				w /= 2;
+			} else {
+				h /= 2;
+			}
+			aspect *= 0.5f;
+			subdivisions++;
+		}
 		AspectWord *word = wa->words+1;
 		for (; word < wa->words+wa->len; word++){
 			if (word->aspect > aspect){
@@ -2154,11 +2218,11 @@ void WordReconstruct(Image *img, ColorRectList *crl, WordArray *wa, char *fontNa
 			}
 		}
 		int angle = 90*10;
-		HFONT hfont = CreateFontA(w > h ? -h : -w,0,w > h ? 0 : angle,w > h ? 0 : angle,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
+		HFONT hfont = CreateFontA(horizontal ? -h : -w,0,horizontal ? 0 : angle,horizontal ? 0 : angle,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
 		HFONT oldFont = SelectObject(hdcBmp,hfont);
 		SetBkMode(hdcBmp,TRANSPARENT);
 		SetTextColor(hdcBmp,cr->color&0xffffff);
-		ExtTextOutA(hdcBmp,r.left,w > h ? r.top : r.bottom,0,0,word->ptr,word->len,0);
+		ExtTextOutA(hdcBmp,r.left,horizontal ? r.top : r.bottom,0,0,word->ptr,word->len,0);
 		SelectObject(hdcBmp,oldFont);
 		DeleteObject(hfont);
 	}
@@ -2378,35 +2442,12 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 				return 0;
 			}
 		}
-		/*
-		if (PointInButton(20,workspaceHeight/2,10,25,x,y)){
-			if (imageIndex > 0){
-				imageIndex--;
-				_snwprintf(gpath,COUNT(gpath),L"%s%s",currentFolder,images.elements[imageIndex]);
-				TextureFromFile(&texture,gpath,interpolation);
-				SetWindowTextW(gwnd,gpath);
-				InvalidateRect(hwnd,0,0);
-			}
-		} else if (PointInButton(clientWidth-20,workspaceHeight/2,10,25,x,y)){
-			if (imageIndex < images.used-1){
-				imageIndex++;
-				_snwprintf(gpath,COUNT(gpath),L"%s%s",currentFolder,images.elements[imageIndex]);
-				TextureFromFile(&texture,gpath,interpolation);
-				SetWindowTextW(gwnd,gpath);
-				InvalidateRect(hwnd,0,0);
-			}
-		} else if (PointInButton(4+50,clientHeight-16,50,10,x,y)){
-			interpolation = !interpolation;
-			glBindTexture(GL_TEXTURE_2D,texture.id);
-			glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,interpolation ? GL_LINEAR : GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,interpolation ? GL_LINEAR : GL_NEAREST);
-			InvalidateRect(hwnd,0,0);
-		} else if (y < workspaceHeight && scale > 1){
+		if (y < clientHeight && scale > 1){
 			panPoint.x = x;
 			panPoint.y = y;
 			memcpy(originalPos,pos,sizeof(pos));
 			pan = true;
-		}*/
+		}
 		return 0;
 	}
 	case WM_DROPFILES:{
