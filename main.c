@@ -1735,7 +1735,7 @@ typedef struct {
 	uint32_t color;
 } ColorRect;
 LIST_IMPLEMENTATION(ColorRect)
-void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop){
+void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim){
 	LIST_FREE(list);
 	//well we need some way to mark taken rectangles
 	//alpha at the moment, idk. For jpg it's clearly getting filled in with 255s
@@ -1744,34 +1744,16 @@ void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim, int slop
 		for (int x = 0; x < img->width; x++){
 			uint32_t c = img->pixels[y*img->width+x];
 			if (ALPHA(c)){
-				bool vertical = 0;//randint(2);
 				int i, j;
-				int lim;
-				if (vertical){
-					lim = img->height;
-					for (i = x; i < img->width; i++){
-						for (j = y; j < lim; j++){
-							if (img->pixels[j*img->width+i] != c){
-								if (lim != img->height && abs(j-lim) > slop){
-									j = lim;
-									goto L0;
-								} else {
-									lim = j;
-								}
-							}
-						}
-					}
-				} else {
-					lim = img->width;
-					for (j = y; j < img->height; j++){
-						for (i = x; i < lim; i++){
-							if (img->pixels[j*img->width+i] != c){
-								if (lim != img->width && abs(i-lim) > slop){
-									i = lim;
-									goto L0;
-								} else {
-									lim = i;
-								}
+				int lim = img->width;
+				for (j = y; j < img->height; j++){
+					for (i = x; i < lim; i++){
+						if (img->pixels[j*img->width+i] != c){
+							if (lim != img->width && i!=lim){
+								i = lim;
+								goto L0;
+							} else {
+								lim = i;
 							}
 						}
 					}
@@ -1814,7 +1796,6 @@ LIST_IMPLEMENTATION(int2)
 typedef struct PCount{
 	struct PCount *parent;
 	int2List positions;
-	RECT boundingBox;
 } PCount;
 void RectangleDecompose(ColorRectList *list, Image *img, int minDim){
 	LIST_FREE(list);
@@ -1879,9 +1860,7 @@ ImageTexture images[5];
 bool greyscale = false;
 int gaussianBlurStrength = 9;
 int quantizeDivisions = 4;
-int rectangleDecomposeSeed;
 int rectangleDecomposeMinDim = 25;
-int rectangleDecomposeSlop = 0;
 
 HCURSOR cursorArrow, cursorFinger, cursorPan;
 int scale = 1;
@@ -2124,9 +2103,8 @@ void Update(){
 	Quantize(&images[2].image,quantizeDivisions);
 	memcpy(images[3].image.pixels,images[2].image.pixels,size);
 
-	srand(rectangleDecomposeSeed);
 	ColorRectList crl = {0};
-	RectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim,rectangleDecomposeSlop);
+	OldRectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim);
 
 	if (gtext.ptr){
 		WordArray wa;
@@ -2224,11 +2202,6 @@ void DecrementQuantizeDivisions(){
 	Update();
 	InvalidateRect(gwnd,0,0);
 }
-void RandomizeRectSeed(){
-	rectangleDecomposeSeed = rand();
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
 void IncrementMinDim(){
 	rectangleDecomposeMinDim = min(2000,rectangleDecomposeMinDim+5);
 	Update();
@@ -2239,25 +2212,13 @@ void DecrementMinDim(){
 	Update();
 	InvalidateRect(gwnd,0,0);
 }
-void IncrementSlop(){
-	rectangleDecomposeSlop = min(100,rectangleDecomposeSlop+1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void DecrementSlop(){
-	rectangleDecomposeSlop = max(0,rectangleDecomposeSlop-1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
 Button buttons[] = {
 	{50,-14,46,10,10,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
 	{50,-14-26*1,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
 	{50,-14-26*2,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
 	{14,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementGaussianBlurStrength},{200,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementGaussianBlurStrength},
 	{14,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementQuantizeDivisions},{200,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementQuantizeDivisions},
-	{50+68-46,-14-26*5,68,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Randomize Rectangles",RandomizeRectSeed},
-	{14,-14-26*6,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementMinDim},{200,-14-26*6,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementMinDim},
-	{14,-14-26*7,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementSlop},{200,-14-26*7,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementSlop},
+	{14,-14-26*5,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementMinDim},{200,-14-26*5,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementMinDim},
 };
 void ToggleGreyscale(){
 	greyscale = !greyscale;
@@ -2436,8 +2397,7 @@ LRESULT WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		}
 		AppendFormatCenteredStringMesh(&tvl,&font,buttons[3].x + (buttons[4].x-buttons[3].x)/2,clientHeight-1+buttons[3].y,0,L"Gaussian Blur Strength: %d",gaussianBlurStrength);
 		AppendFormatCenteredStringMesh(&tvl,&font,buttons[5].x + (buttons[6].x-buttons[5].x)/2,clientHeight-1+buttons[5].y,0,L"Quantize Divisions: %d",quantizeDivisions);
-		AppendFormatCenteredStringMesh(&tvl,&font,buttons[8].x + (buttons[9].x-buttons[8].x)/2,clientHeight-1+buttons[8].y,0,L"Rect Min Dim: %d",rectangleDecomposeMinDim);
-		AppendFormatCenteredStringMesh(&tvl,&font,buttons[10].x + (buttons[11].x-buttons[10].x)/2,clientHeight-1+buttons[10].y,0,L"Rect Slop: %d",rectangleDecomposeSlop);
+		AppendFormatCenteredStringMesh(&tvl,&font,buttons[7].x + (buttons[8].x-buttons[7].x)/2,clientHeight-1+buttons[7].y,0,L"Rect Min Dim: %d",rectangleDecomposeMinDim);
 		if (imagePathLen){
 			AppendStringMesh(&tvl,&font,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0,imagePath,imagePathLen);
 		}
@@ -2470,8 +2430,6 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	DarkGLMakeWindow(RID_ICON,L"DarkWolken",clientWidth,clientHeight,WindowProc); //loads OpenGL functions
 
 	GenCachedFont(&font,L"Segoe UI",12);
-
-	rectangleDecomposeSeed = rand();
 
 	dictBytes.ptr = LoadFileW(L"dict.txt",&dictBytes.len);
 	Lexer lexer = {
