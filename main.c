@@ -1572,33 +1572,29 @@ void GreyScale(Image *img){
 }
 void GaussianBlur(Image *img, int strength){
 	float *kernel = MallocOrDie(strength*sizeof(*kernel));
-	float d = 3.0f / (strength-1);
 	float disx = 0.0f;
-	float inv2pi = 1.0f / sqrtf(2.0f*M_PI);
 	for (int i = 0; i < strength; i++){
-		kernel[i] = expf(-0.5f*disx*disx)*inv2pi;
-		disx += d;
+		kernel[i] = expf(-0.5f*disx*disx)/sqrtf(2.0f*M_PI); //This is the gaussian distribution with mean=0, standard_deviation=1
+		disx += 3.0f / (strength-1);						//it happens to pretty much reach zero at x=3, so we divide that range by strength-1 for a step interval.
 	}
 	float sum = 0.0f;
 	for (int i = 0; i < strength; i++){
-		sum += kernel[i];
+		sum += (i ? 2 : 1) * kernel[i]; //Our kernel is half of a full odd dimensional kernel. The first element is the center, the other elements have to be counted twice.
 	}
-	sum = 1.0f / sum;
 	for (int i = 0; i < strength; i++){
-		kernel[i] *= sum;
+		kernel[i] /= sum; //This is the normalization step
 	}
 	Image b;
 	b.width = img->width;
 	b.height = img->height;
 	b.pixels = MallocOrDie(b.width*b.height*sizeof(*b.pixels));
-	float inv255 = 1.0f / 255.0f;
 	for (int y = 0; y < img->height; y++){
 		for (int x = 0; x < img->width; x++){
 			float sums[3] = {0,0,0};
 			for (int dx = -strength+1; dx < strength-1; dx++){
 				uint8_t *p = img->pixels+y*img->width+CLAMP(x+dx,0,img->width-1);
 				for (int i = 0; i < 3; i++){
-					sums[i] = min(1.0f,sums[i]+inv255*p[i]*kernel[abs(dx)]);
+					sums[i] = min(1.0f,sums[i]+(p[i]/255.0f)*kernel[abs(dx)]);
 				}
 			}
 			uint8_t *p = b.pixels+y*b.width+x;
@@ -1614,7 +1610,7 @@ void GaussianBlur(Image *img, int strength){
 			for (int dy = -strength+1; dy < strength-1; dy++){
 				uint8_t *p = b.pixels+CLAMP(y+dy,0,b.height-1)*b.width+x;
 				for (int i = 0; i < 3; i++){
-					sums[i] = min(1.0f,sums[i]+inv255*p[i]*kernel[abs(dy)]);
+					sums[i] = min(1.0f,sums[i]+(p[i]/255.0f)*kernel[abs(dy)]);
 				}
 			}
 			uint8_t *p = img->pixels+y*img->width+x;
@@ -1624,7 +1620,6 @@ void GaussianBlur(Image *img, int strength){
 			p[3] = ((uint8_t *)(b.pixels+y*b.width+x))[3];
 		}
 	}
-
 	free(kernel);
 	free(b.pixels);
 }
@@ -1735,7 +1730,7 @@ typedef struct {
 	uint32_t color;
 } ColorRect;
 LIST_IMPLEMENTATION(ColorRect)
-void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim){
+void RectangleDecompose(ColorRectList *list, Image *img, int minDim){
 	LIST_FREE(list);
 	//well we need some way to mark taken rectangles
 	//alpha at the moment, idk. For jpg it's clearly getting filled in with 255s
@@ -1785,55 +1780,6 @@ void OldRectangleDecompose(ColorRectList *list, Image *img, int minDim){
 		for (int y = r->rect.bottom; y < r->rect.top; y++){
 			for (int x = r->rect.left; x < r->rect.right; x++){
 				img->pixels[y*img->width+x] = color;
-			}
-		}
-	}
-}
-typedef struct {
-	int x,y;
-} int2;
-LIST_IMPLEMENTATION(int2)
-typedef struct PCount{
-	struct PCount *parent;
-	int2List positions;
-} PCount;
-void RectangleDecompose(ColorRectList *list, Image *img, int minDim){
-	LIST_FREE(list);
-	/*
-		1. Find center of mass of largest contiguous region. If that point is not in the region, find the nearest point to it that is.
-		2. Expand a rectangle out from that point in all directions until it hits edges.
-		3. Go to 1 until the largest contiguous region has a dimension below minDim.
-	*/
-	int total = img->width*img->height;
-	PCount *pc = MallocOrDie(total*sizeof(*pc));
-	for (int y = 0; y < img->height; y++){
-		for (int x = 0; x < img->width; x++){
-			PCount *p = pc + y*img->width + x;
-			p->parent = p;
-			LIST_INIT(&p->positions);
-			int2 *i = int2ListMakeRoom(&p->positions,1);
-			i->x = x;
-			i->y = y;
-			p->positions.used++;
-		}
-	}
-	for (int y = 0; y < img->height; y++){
-		for (int x = 0; x < img->width; x++){
-			uint32_t p = img->pixels[y*img->width+x];
-			if (x > 0 && img->pixels[y*img->width+x-1]==p){
-				PCount *left = pc+y*img->width+x-1;
-				while (left->parent != left) left = left->parent;
-				pc[y*img->width+x].parent = left;
-				int2ListAppend(&left->positions,pc[y*img->width+x].positions.elements,pc[y*img->width+x].positions.used);
-				if (y > 0 && img->pixels[(y-1)*img->width+x]==p){
-					pc[(y-1)*img->width+x].parent = left;
-					int2ListAppend(&left->positions,pc[(y-1)*img->width+x].positions.elements,pc[(y-1)*img->width+x].positions.used);
-				}
-			} else if (y > 0 && img->pixels[(y-1)*img->width+x]==p){
-				PCount *down = pc+(y-1)*img->width+x;
-				while (down->parent != down) down = down->parent;
-				pc[y*img->width+x].parent = down;
-				int2ListAppend(&down->positions,pc[y*img->width+x].positions.elements,pc[y*img->width+x].positions.used);
 			}
 		}
 	}
@@ -2104,7 +2050,7 @@ void Update(){
 	memcpy(images[3].image.pixels,images[2].image.pixels,size);
 
 	ColorRectList crl = {0};
-	OldRectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim);
+	RectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim);
 
 	if (gtext.ptr){
 		WordArray wa;
