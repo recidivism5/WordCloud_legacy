@@ -61,6 +61,9 @@ typedef struct {
 } Bytes;
 
 void FatalErrorA(char *format, ...){
+#if _DEBUG
+	__debugbreak();
+#endif
 	va_list args;
 	va_start(args,format);
 #if _DEBUG
@@ -75,6 +78,9 @@ void FatalErrorA(char *format, ...){
 	exit(1);
 }
 void FatalErrorW(WCHAR *format, ...){
+#if _DEBUG
+	__debugbreak();
+#endif
 	va_list args;
 	va_start(args,format);
 #if _DEBUG
@@ -190,9 +196,10 @@ BOOL FileOrFolderExists(LPCTSTR path){
 }
 
 /***************************** Image */
+typedef unsigned char Color[4];
 typedef struct {
-	int width,height,rowPitch;
-	uint32_t *pixels;
+	int width, height;
+	Color *pixels;
 } Image;
 void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 	static IWICImagingFactory2 *ifactory = 0;
@@ -209,18 +216,18 @@ void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 	WICConvertBitmapSource(&GUID_WICPixelFormat32bppRGBA,pFrame,&convertedSrc);
 	convertedSrc->lpVtbl->GetSize(convertedSrc,&img->width,&img->height);
 	uint32_t size = img->width*img->height*sizeof(uint32_t);
-	img->rowPitch = img->width*sizeof(uint32_t);
+	UINT rowPitch = img->width*sizeof(uint32_t);
 	img->pixels = MallocOrDie(size);
 	if (flip){
 		IWICBitmapFlipRotator *pFlipRotator;
 		ifactory->lpVtbl->CreateBitmapFlipRotator(ifactory,&pFlipRotator);
 		pFlipRotator->lpVtbl->Initialize(pFlipRotator,convertedSrc,WICBitmapTransformFlipVertical);
-		if (S_OK != pFlipRotator->lpVtbl->CopyPixels(pFlipRotator,0,img->rowPitch,size,img->pixels)){
+		if (S_OK != pFlipRotator->lpVtbl->CopyPixels(pFlipRotator,0,rowPitch,size,img->pixels)){
 			FatalErrorW(L"LoadImageFromFile: %s CopyPixels failed",path);
 		}
 		pFlipRotator->lpVtbl->Release(pFlipRotator);
 	} else {
-		if (S_OK != convertedSrc->lpVtbl->CopyPixels(convertedSrc,0,img->rowPitch,size,img->pixels)){
+		if (S_OK != convertedSrc->lpVtbl->CopyPixels(convertedSrc,0,rowPitch,size,img->pixels)){
 			FatalErrorW(L"LoadImageFromFile: %s CopyPixels failed",path);
 		}
 	}
@@ -234,11 +241,11 @@ GLenum glCheckError_(const char *file, int line){
 	while ((errorCode = glGetError()) != GL_NO_ERROR){
 		char *error;
 		switch (errorCode){
-		case GL_INVALID_ENUM:      error = "INVALID_ENUM"; break;
-		case GL_INVALID_VALUE:     error = "INVALID_VALUE"; break;
-		case GL_INVALID_OPERATION: error = "INVALID_OPERATION"; break;
-		case GL_OUT_OF_MEMORY:     error = "OUT_OF_MEMORY"; break;
-		default: error = "UNKNOWN TYPE BEAT";break;
+			case GL_INVALID_ENUM:      error = "INVALID_ENUM"; break;
+			case GL_INVALID_VALUE:     error = "INVALID_VALUE"; break;
+			case GL_INVALID_OPERATION: error = "INVALID_OPERATION"; break;
+			case GL_OUT_OF_MEMORY:     error = "OUT_OF_MEMORY"; break;
+			default: error = "UNKNOWN TYPE BEAT";break;
 		}
 		FatalErrorA("%s %s (%d)",error,file,line);
 	}
@@ -267,14 +274,13 @@ void TextureFromFile(Texture *t, WCHAR *path, bool interpolated){
 	TextureFromImage(t,&img,interpolated);
 	free(img.pixels);
 }
-
-typedef struct {
-	BITMAPINFOHEADER    bmiHeader;
-	RGBQUAD             bmiColors[4];
-} BITMAPINFO_TRUECOLOR32;
+void DestroyTexture(Texture *t){
+	glDeleteTextures(1,&t->id);
+	memset(t,0,sizeof(*t));
+}
 
 /****************** Image Processing */
-void GreyScale(Image *img){
+/*void GreyScale(Image *img){
 	for (int i = 0; i < img->width*img->height; i++){
 		uint8_t *p = img->pixels+i;
 		int grey = min(255,0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2]);
@@ -387,7 +393,7 @@ void Quantize(Image *img, int divisions){
 
 	free(invals);
 	free(outvals);
-}
+}*/
 
 /*typedef struct {
 	RECT rect;
@@ -802,6 +808,219 @@ bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int 
 	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
 }*/
 
+typedef struct {
+	BITMAPINFOHEADER    bmiHeader;
+	RGBQUAD             bmiColors[4];
+} BITMAPINFO_TRUECOLOR32;
+
+typedef struct {
+	int width, height;
+	Color *pixels;
+	HDC hdcBmp;
+	HBITMAP hbmOld, hbm;
+	HFONT fontOld;
+} GdiImage;
+
+void GdiImageNew(GdiImage *img, int width, int height){
+	img->width = width;
+	img->height = height;
+	HDC hdcScreen = GetDC(0);
+	img->hdcBmp = CreateCompatibleDC(hdcScreen);
+	ReleaseDC(0,hdcScreen);
+	BITMAPINFO_TRUECOLOR32 bmi = {
+		.bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
+		.bmiHeader.biWidth = width,
+		.bmiHeader.biHeight = height,
+		.bmiHeader.biPlanes = 1,
+		.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS,
+		.bmiHeader.biBitCount = 32,
+		.bmiColors[0].rgbRed = 0xff,
+		.bmiColors[1].rgbGreen = 0xff,
+		.bmiColors[2].rgbBlue = 0xff,
+	};
+	img->hbm = CreateDIBSection(img->hdcBmp,&bmi,DIB_RGB_COLORS,&img->pixels,0,0);
+	ASSERT(img->hbm);
+	img->hbmOld = SelectObject(img->hdcBmp,img->hbm);
+
+	img->fontOld = 0;
+}
+
+void GdiImageDestroy(GdiImage *img){
+	if (img->fontOld){
+		SelectObject(img->hdcBmp,img->fontOld);
+	}
+	SelectObject(img->hdcBmp,img->hbmOld);
+	DeleteDC(img->hdcBmp);
+	DeleteObject(img->hbm);
+	memset(img,0,sizeof(*img));
+}
+
+void GdiImageSetFont(GdiImage *img, HFONT font){
+	HFONT old = SelectObject(img->hdcBmp,font);
+	if (!img->fontOld){
+		img->fontOld = old;
+	}
+	SetBkMode(img->hdcBmp,TRANSPARENT);
+}
+
+void GdiImageSetFontColor(GdiImage *img, uint32_t color){
+	SetTextColor(img->hdcBmp,color & 0xffffff);
+}
+
+void GdiImageDrawText(GdiImage *img, WCHAR *str, int x, int y){
+	ExtTextOutW(img->hdcBmp,x,y,0,0,str,wcslen(str),0);
+}
+
+void GdiImageTextDimensions(GdiImage *img, WCHAR *str, int *width, int *height){
+	RECT r = {0};
+	DrawTextW(img->hdcBmp,str,wcslen(str),&r,DT_CALCRECT|DT_NOPREFIX);
+	*width = r.right-r.left;
+	*height = r.bottom-r.top;
+}
+
+HFONT GetUserChosenFont(){
+	LOGFONTW lf;
+	CHOOSEFONTW cf = {
+		.lStructSize = sizeof(cf),
+		.lpLogFont = &lf,
+		.Flags = CF_INITTOLOGFONTSTRUCT,
+	};
+	ASSERT(ChooseFontW(&cf));
+	return CreateFontIndirectW(&lf);
+}
+
+HFONT GetSystemUiFont(){
+	NONCLIENTMETRICSW ncm = {
+		.cbSize = sizeof(ncm)
+	};
+	SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,sizeof(ncm),&ncm,0);
+	return CreateFontIndirectW(&ncm.lfCaptionFont);
+}
+
+HFONT sysUiFont;
+
+int uiY = 0;
+GdiImage uiText;
+POINT cursorPos;
+bool buttonHovered;
+void BeginUi(){
+	GdiImageNew(&uiText,clientWidth,clientHeight);
+	GdiImageSetFont(&uiText,sysUiFont);
+	GdiImageSetFontColor(&uiText,RGB(255,255,255));
+
+	GetCursorPos(&cursorPos);
+	ScreenToClient(gwnd,&cursorPos);
+	buttonHovered = false;
+
+	uiY = 1;
+}
+void EndUi(){
+	Image img = {
+		.width = uiText.width,
+		.height = uiText.height,
+		.pixels = uiText.pixels
+	};
+	for (Color *p = img.pixels; p < img.pixels+img.width*img.height; p++){
+		if (p[0][0]){
+			p[0][3] = 0xff;
+		}
+	}
+	Texture tex = {0};
+	TextureFromImage(&tex,&img,false);
+
+	glEnable(GL_TEXTURE_2D);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+	glBindTexture(GL_TEXTURE_2D,tex.id);
+
+	glBegin(GL_TRIANGLES);
+
+	glTexCoord2f(0,1);
+	glVertex3f(0,0,1);
+	glTexCoord2f(0,0);
+	glVertex3f(0,clientHeight,1);
+	glTexCoord2f(1,0);
+	glVertex3f(clientWidth,clientHeight,1);
+
+	glTexCoord2f(1,0);
+	glVertex3f(clientWidth,clientHeight,1);
+	glTexCoord2f(1,1);
+	glVertex3f(clientWidth,0,1);
+	glTexCoord2f(0,1);
+	glVertex3f(0,0,1);
+
+	glEnd();
+
+	glDisable(GL_TEXTURE_2D);
+
+	DestroyTexture(&tex);
+	GdiImageDestroy(&uiText);
+
+	if (buttonHovered){
+		SetCursor(cursorFinger);
+	} else {
+		RECT cr;
+		GetClientRect(gwnd,&cr);
+		if (PtInRect(&cr,cursorPos)){
+			SetCursor(cursorArrow);
+		}
+	}
+}
+bool Button(char *name){
+	int width, height;
+	GdiImageTextDimensions(&uiText,name,&width,&height);
+	width += 9;
+	height += 5;
+	GdiImageDrawText(&uiText,name,4,uiY+2);
+
+	glBegin(GL_TRIANGLES);
+
+	glColor3f(1,0,0);
+	glVertex3f(0,uiY,0);
+	glColor3f(0,1,0);
+	glVertex3f(0,uiY+height,0);
+	glColor3f(0,0,1);
+	glVertex3f(width,uiY+height,0);
+	
+	glColor3f(0,0,1);
+	glVertex3f(width,uiY+height,0);
+	glColor3f(0,1,0);
+	glVertex3f(width,uiY,0);
+	glColor3f(1,0,0);
+	glVertex3f(0,uiY,0);
+
+	glEnd();
+
+	RECT r = {0,uiY,width,uiY+height};
+	if (PtInRect(&r,cursorPos)){
+		buttonHovered = true;
+
+		glBegin(GL_LINES);
+
+		float hi[] = {1,1,1};
+		float lo[] = {0.5,0.5,0.5};
+		glColor3fv(hi);
+		glVertex3f(1,uiY,1);
+		glColor3fv(lo);
+		glVertex3f(1,uiY+height,1);
+		glColor3fv(lo);
+		glVertex3f(1,uiY+height,1);
+		glColor3fv(lo);
+		glVertex3f(width,uiY+height,1);
+		glColor3fv(lo);
+		glVertex3f(width,uiY+height,1);
+		glColor3fv(hi);
+		glVertex3f(width,uiY,0);
+		glColor3fv(hi);
+		glVertex3f(width,uiY,0);
+		glColor3fv(hi);
+		glVertex3f(0,uiY,1);
+
+		glEnd();
+	}
+
+	uiY += height + 4;
+}
+
 LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 	switch (uMsg){
 		case WM_CREATE:{
@@ -822,8 +1041,11 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		case WM_SIZE:{
 			clientWidth = LOWORD(lParam);
 			clientHeight = HIWORD(lParam);
-			glViewport(0,0,clientWidth,clientHeight);
-			glOrtho(0,clientWidth,0,clientHeight,-10,10);
+			if (clientWidth && clientHeight){
+				glViewport(0,0,clientWidth,clientHeight);
+				glLoadIdentity();
+				glOrtho(0,clientWidth,clientHeight,0,-10,10);
+			}
 			return 0;
 		}
 		case WM_MOUSEMOVE:{
@@ -906,6 +1128,9 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			return 0;
 		}
 		case WM_PAINT:{
+			if (!clientWidth || !clientHeight){
+				return 0;
+			}
 			glCheckError();
 
 			glClearColor(0.122f,0.122f,0.137f,1.0f);
@@ -916,79 +1141,16 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			glEnable(GL_BLEND);
 			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-			/*if (imagePathLen){
-				float totalHeight = (float)images[0].image.height*COUNT(images);
-				float width = min(clientWidth,images[0].image.width);
-				float height = width * (totalHeight/(float)images[0].image.width);
-				if (height > clientHeight){
-					height = clientHeight;
-					width = height * ((float)images[0].image.width/totalHeight);
-				}
-				width *= scale;
-				height *= scale;
-				if (scale == 1){
-					pos[0] = (clientWidth-(int)width)/2;
-					pos[1] = (clientHeight-(int)height)/2;
-					pos[2] = -1;
-				}
+			BeginUi();
+			if (Button(L"Open Image")){
+				
+			}
+			if (Button(L"Open Text")){
 			
-				glUseProgram(TextureShader.id);
-				glUniform1i(TextureShader.uTex,0);
-				glBindBuffer(GL_ARRAY_BUFFER,imageQuad.vertexBuffer);
-				TextureShaderPrepBuffer();
-				float mata[16],matb[16],matc[16];
-				float individualHeight = height/COUNT(images);
-				for (int i = 0; i < COUNT(images); i++){
-					glBindTexture(GL_TEXTURE_2D,images[i].texture.id);
-					Float4x4Scale(matb,width,individualHeight,1);
-					Float4x4Translation(mata,pos[0],pos[1]+i*individualHeight,pos[2]);
-					Float4x4Multiply(mata,matb,matc);
-					Float4x4Multiply(ortho,matc,mata);
-					glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,mata);
-					glDrawArrays(GL_TRIANGLES,0,imageQuad.vertexCount);
-				}
 			}
-
-			glUseProgram(RoundedRectangleShader.id);
-			glUniformMatrix4fv(RoundedRectangleShader.proj,1,GL_FALSE,ortho);
-			RoundedRectangleVertexList rrv = {0};
-			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
-				AppendRoundedRectangle(&rrv,b->x,clientHeight-1+b->y,0,b->halfWidth,b->halfHeight,b->roundingRadius,b->color,b->IconColor);
-			}
-			GLuint buf;
-			glGenBuffers(1,&buf);
-			glBindBuffer(GL_ARRAY_BUFFER,buf);
-			glBufferData(GL_ARRAY_BUFFER,rrv.used*sizeof(*rrv.elements),rrv.elements,GL_STATIC_DRAW);
-			RoundedRectangleShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,rrv.used);
-			LIST_FREE(&rrv);
-
-			glUseProgram(TextureShader.id);
-			glUniform1i(TextureShader.uTex,0);
-			glBindTexture(GL_TEXTURE_2D,font.texture.id);
-			TextureVertexList tvl = {0};
-			for (Button *b = buttons; b < buttons+COUNT(buttons); b++){
-				AppendCenteredStringMesh(&tvl,&font,b->x,clientHeight-1+b->y,1,b->string,wcslen(b->string));
-			}
-			AppendFormatCenteredStringMesh(&tvl,&font,buttons[3].x + (buttons[4].x-buttons[3].x)/2,clientHeight-1+buttons[3].y,0,L"Gaussian Blur Strength: %d",gaussianBlurStrength);
-			AppendFormatCenteredStringMesh(&tvl,&font,buttons[5].x + (buttons[6].x-buttons[5].x)/2,clientHeight-1+buttons[5].y,0,L"Quantize Divisions: %d",quantizeDivisions);
-			AppendFormatCenteredStringMesh(&tvl,&font,buttons[7].x + (buttons[8].x-buttons[7].x)/2,clientHeight-1+buttons[7].y,0,L"Rect Min Dim: %d",rectangleDecomposeMinDim);
-			if (imagePathLen){
-				AppendStringMesh(&tvl,&font,buttons[0].x + buttons[0].halfWidth+4,clientHeight-1+buttons[0].y-font.charDims['l'-' '][1]/2,0,imagePath,imagePathLen);
-			}
-			if (textPathLen){
-				AppendStringMesh(&tvl,&font,buttons[1].x + buttons[1].halfWidth+4,clientHeight-1+buttons[1].y-font.charDims['l'-' '][1]/2,0,textPath,textPathLen);
-			}
-			glUniformMatrix4fv(TextureShader.uProj,1,GL_FALSE,ortho);
-			glBufferData(GL_ARRAY_BUFFER,tvl.used*sizeof(*tvl.elements),tvl.elements,GL_STATIC_DRAW);
-			TextureShaderPrepBuffer();
-			glDrawArrays(GL_TRIANGLES,0,tvl.used);
-			LIST_FREE(&tvl);
-
-			glDeleteBuffers(1,&buf);*/
+			EndUi();
 
 			SwapBuffers(hdc);
-			ValidateRect(hwnd,0);
 			return 0;
 		}
 	}
@@ -1079,6 +1241,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	if (argc==2){
 		//LoadImg(argv[1]);
 	}
+
+	sysUiFont = GetSystemUiFont();
 
 	ShowWindow(hwnd,SW_SHOW);
 
