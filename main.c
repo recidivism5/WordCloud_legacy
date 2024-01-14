@@ -12,8 +12,6 @@
 #define UNICODE
 #include <windows.h>
 #include <windowsx.h>
-#include <dwmapi.h>
-#include <uxtheme.h>
 #include <vssym32.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
@@ -28,9 +26,7 @@
 #pragma comment (lib, "user32.lib")
 #pragma comment (lib, "ole32.lib")
 #pragma comment (lib, "uuid.lib")
-#pragma comment (lib, "dwmapi.lib")
 #pragma comment (lib, "comdlg32.lib")
-#pragma comment (lib, "uxtheme.lib")
 #pragma comment (lib, "advapi32.lib")
 #pragma comment (lib, "comctl32.lib")
 #pragma comment (lib, "opengl32.lib")
@@ -61,34 +57,28 @@ typedef struct {
 } Bytes;
 
 void FatalErrorA(char *format, ...){
-#if _DEBUG
-	__debugbreak();
-#endif
 	va_list args;
 	va_start(args,format);
-#if _DEBUG
-	vprintf(format,args);
-	printf("\n");
-#else
-	char msg[512];
+	static char msg[1024];
 	vsprintf(msg,format,args);
+#if _DEBUG
+	OutputDebugStringA(msg);
+	__debugbreak();
+#else
 	MessageBoxA(0,msg,"Error",MB_ICONEXCLAMATION);
 #endif
 	va_end(args);
 	exit(1);
 }
 void FatalErrorW(WCHAR *format, ...){
-#if _DEBUG
-	__debugbreak();
-#endif
 	va_list args;
 	va_start(args,format);
-#if _DEBUG
-	vwprintf(format,args);
-	wprintf(L"\n");
-#else
-	WCHAR msg[512];
+	static WCHAR msg[1024];
 	vswprintf(msg,COUNT(msg),format,args);
+#if _DEBUG
+	OutputDebugStringW(msg);
+	__debugbreak();
+#else
 	MessageBoxW(0,msg,L"Error",MB_ICONEXCLAMATION);
 #endif
 	va_end(args);
@@ -169,6 +159,7 @@ size_t fnv1a(size_t keylen, char *key){
 char *LoadFileA(char *path, size_t *size){
 	FILE *f = fopen(path,"rb");
 	if (!f) FatalErrorA("File not found: %s",path);
+	ASSERT(f);
 	fseek(f,0,SEEK_END);
 	*size = ftell(f);
 	fseek(f,0,SEEK_SET);
@@ -180,6 +171,7 @@ char *LoadFileA(char *path, size_t *size){
 char *LoadFileW(WCHAR *path, size_t *size){
 	FILE *f = _wfopen(path,L"rb");
 	if (!f) FatalErrorW(L"File not found: %s",path);
+	ASSERT(f);
 	fseek(f,0,SEEK_END);
 	*size = ftell(f);
 	fseek(f,0,SEEK_SET);
@@ -188,23 +180,20 @@ char *LoadFileW(WCHAR *path, size_t *size){
 	fclose(f);
 	return buf;
 }
-int CharIsSuitableForFileName(char c){
-	return (c==' ') || ((','<=c)&&(c<='9')) || (('A'<=c)&&(c<='Z')) || (('_'<=c)&&(c<='z'));
-}
-BOOL FileOrFolderExists(LPCTSTR path){
-	return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-}
 
 /***************************** Image */
 typedef unsigned char Color[4];
+
 typedef struct {
 	int width, height;
 	Color *pixels;
 } Image;
+
 void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 	static IWICImagingFactory2 *ifactory = 0;
-	if (!ifactory && FAILED(CoCreateInstance(&CLSID_WICImagingFactory2,0,CLSCTX_INPROC_SERVER,&IID_IWICImagingFactory2,&ifactory))){
-		FatalErrorW(L"LoadImageFromFile: failed to create IWICImagingFactory2");
+	if (!ifactory){
+		ASSERT(SUCCEEDED(CoCreateInstance(&CLSID_WICImagingFactory2,0,CLSCTX_INPROC_SERVER,&IID_IWICImagingFactory2,&ifactory)));
+		ASSERT(ifactory);
 	}
 	IWICBitmapDecoder *pDecoder = 0;
 	if (S_OK != ifactory->lpVtbl->CreateDecoderFromFilename(ifactory,path,0,GENERIC_READ,WICDecodeMetadataCacheOnDemand,&pDecoder)){
@@ -213,7 +202,7 @@ void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 	IWICBitmapFrameDecode *pFrame = 0;
 	pDecoder->lpVtbl->GetFrame(pDecoder,0,&pFrame);
 	IWICBitmapSource *convertedSrc = 0;
-	WICConvertBitmapSource(&GUID_WICPixelFormat32bppRGBA,pFrame,&convertedSrc);
+	WICConvertBitmapSource(&GUID_WICPixelFormat32bppRGBA,(IWICBitmapSource *)pFrame,&convertedSrc);
 	convertedSrc->lpVtbl->GetSize(convertedSrc,&img->width,&img->height);
 	uint32_t size = img->width*img->height*sizeof(uint32_t);
 	UINT rowPitch = img->width*sizeof(uint32_t);
@@ -222,18 +211,107 @@ void LoadImageFromFile(Image *img, WCHAR *path, bool flip){
 		IWICBitmapFlipRotator *pFlipRotator;
 		ifactory->lpVtbl->CreateBitmapFlipRotator(ifactory,&pFlipRotator);
 		pFlipRotator->lpVtbl->Initialize(pFlipRotator,convertedSrc,WICBitmapTransformFlipVertical);
-		if (S_OK != pFlipRotator->lpVtbl->CopyPixels(pFlipRotator,0,rowPitch,size,img->pixels)){
+		if (S_OK != pFlipRotator->lpVtbl->CopyPixels(pFlipRotator,0,rowPitch,size,(BYTE *)img->pixels)){
 			FatalErrorW(L"LoadImageFromFile: %s CopyPixels failed",path);
 		}
 		pFlipRotator->lpVtbl->Release(pFlipRotator);
 	} else {
-		if (S_OK != convertedSrc->lpVtbl->CopyPixels(convertedSrc,0,rowPitch,size,img->pixels)){
+		if (S_OK != convertedSrc->lpVtbl->CopyPixels(convertedSrc,0,rowPitch,size,(BYTE *)img->pixels)){
 			FatalErrorW(L"LoadImageFromFile: %s CopyPixels failed",path);
 		}
 	}
 	convertedSrc->lpVtbl->Release(convertedSrc);
 	pFrame->lpVtbl->Release(pFrame);
 	pDecoder->lpVtbl->Release(pDecoder);
+}
+
+typedef struct {
+	BITMAPINFOHEADER    bmiHeader;
+	RGBQUAD             bmiColors[4];
+} BITMAPINFO_TRUECOLOR32;
+
+typedef struct {
+	int width, height;
+	Color *pixels;
+	HDC hdcBmp;
+	HBITMAP hbmOld, hbm;
+	HFONT fontOld;
+} GdiImage;
+
+void GdiImageNew(GdiImage *img, int width, int height){
+	img->width = width;
+	img->height = height;
+	HDC hdcScreen = GetDC(0);
+	img->hdcBmp = CreateCompatibleDC(hdcScreen);
+	ReleaseDC(0,hdcScreen);
+	BITMAPINFO_TRUECOLOR32 bmi = {
+		.bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
+		.bmiHeader.biWidth = width,
+		.bmiHeader.biHeight = height,
+		.bmiHeader.biPlanes = 1,
+		.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS,
+		.bmiHeader.biBitCount = 32,
+		.bmiColors[0].rgbRed = 0xff,
+		.bmiColors[1].rgbGreen = 0xff,
+		.bmiColors[2].rgbBlue = 0xff,
+	};
+	img->hbm = CreateDIBSection(img->hdcBmp,(BITMAPINFO *)&bmi,DIB_RGB_COLORS,(void **)&img->pixels,0,0);
+	ASSERT(img->hbm);
+	img->hbmOld = SelectObject(img->hdcBmp,img->hbm);
+
+	img->fontOld = 0;
+}
+
+void GdiImageDestroy(GdiImage *img){
+	if (img->fontOld){
+		SelectObject(img->hdcBmp,img->fontOld);
+	}
+	SelectObject(img->hdcBmp,img->hbmOld);
+	DeleteDC(img->hdcBmp);
+	DeleteObject(img->hbm);
+	memset(img,0,sizeof(*img));
+}
+
+void GdiImageSetFont(GdiImage *img, HFONT font){
+	HFONT old = SelectObject(img->hdcBmp,font);
+	if (!img->fontOld){
+		img->fontOld = old;
+	}
+	SetBkMode(img->hdcBmp,TRANSPARENT);
+}
+
+void GdiImageSetFontColor(GdiImage *img, uint32_t color){
+	SetTextColor(img->hdcBmp,color & 0xffffff);
+}
+
+void GdiImageDrawText(GdiImage *img, WCHAR *str, int x, int y){
+	ExtTextOutW(img->hdcBmp,x,y,0,0,str,(UINT)wcslen(str),0);
+}
+
+void GdiImageTextDimensions(GdiImage *img, WCHAR *str, int *width, int *height){
+	RECT r = {0};
+	DrawTextW(img->hdcBmp,str,(UINT)wcslen(str),&r,DT_CALCRECT|DT_NOPREFIX);
+	*width = r.right-r.left;
+	*height = r.bottom-r.top;
+}
+
+HFONT GetUserChosenFont(){
+	LOGFONTW lf;
+	CHOOSEFONTW cf = {
+		.lStructSize = sizeof(cf),
+		.lpLogFont = &lf,
+		.Flags = CF_INITTOLOGFONTSTRUCT,
+	};
+	ASSERT(ChooseFontW(&cf));
+	return CreateFontIndirectW(&lf);
+}
+
+HFONT GetSystemUiFont(){
+	NONCLIENTMETRICSW ncm = {
+		.cbSize = sizeof(ncm)
+	};
+	SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,sizeof(ncm),&ncm,0);
+	return CreateFontIndirectW(&ncm.lfCaptionFont);
 }
 
 GLenum glCheckError_(const char *file, int line){
@@ -257,6 +335,7 @@ typedef struct {
 	GLuint id;
 	int width, height;
 } Texture;
+
 void TextureFromImage(Texture *t, Image *i, bool interpolated){
 	t->width = i->width;
 	t->height = i->height;
@@ -268,12 +347,23 @@ void TextureFromImage(Texture *t, Image *i, bool interpolated){
 	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,interpolated ? GL_LINEAR : GL_NEAREST);
 	glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,t->width,t->height,0,GL_RGBA,GL_UNSIGNED_BYTE,i->pixels);
 }
+
+void TextureFromGdiImage(Texture *t, GdiImage *i, bool interpolated){
+	Image img = {
+		.width = i->width,
+		.height = i->height,
+		.pixels = i->pixels,
+	};
+	TextureFromImage(t,&img,interpolated);
+}
+
 void TextureFromFile(Texture *t, WCHAR *path, bool interpolated){
 	Image img;
 	LoadImageFromFile(&img,path,true);
 	TextureFromImage(t,&img,interpolated);
 	free(img.pixels);
 }
+
 void DestroyTexture(Texture *t){
 	glDeleteTextures(1,&t->id);
 	memset(t,0,sizeof(*t));
@@ -502,412 +592,78 @@ void AdvanceLine(Lexer *l){
 	while (l->cur != l->end && !IsCharAlphaNumericA(*l->cur)) l->cur++;
 }
 
-typedef struct {
-	size_t len;
-	char *ptr;
-	float aspect;
-} AspectWord;
-int CompareAspectWords(AspectWord *a, AspectWord *b){
-	return (a->aspect > b->aspect) - (a->aspect < b->aspect);
-}
-typedef struct {
-	size_t len;
-	AspectWord *words;
-} WordArray;
-/*
-WordsByAspect:
-	Returns a WordArray of the n most or least prevalent words from *text*
-	matching *typeFlags* (OR'd combination of enum WordType values),sorted
-	from least to greatest aspect ratio using the font specified by
-	*fontName* and the case specified by *wordCase*.
-	If *top* > 0, the top *top* words are used.
-	If *top* == 0, all words are used.
-	if *top* < 0, the bottom abs(*top*) words are used.
-*/
-/*typedef enum {
-	LOWER_CASE,
-	CAPITALIZED,
-	UPPER_CASE
-} WordCase;
-void WordsByAspect(WordArray *wa, Bytes *text, int typeFlags, int top, char *fontName, WordCase wordCase){
-	intLinkedHashList hl = {0};
-	char *prev = text->ptr;
-	char *cur = text->ptr;
-	char *end = text->ptr+text->len;
-	while (1){
-		while (cur != end){
-			if (IsCharAlphaNumericA(*cur)) break;
-			cur++;
-		}
-		if (cur == end) break;
-		prev = cur;
-		while (cur != end && IsCharAlphaNumericA(*cur)) cur++;
-		int len = cur-prev;
-		if (len > 1){
-			StringToLower(len,prev);
-			int *i = intLinkedHashListGet(&dict,len,prev);
-			if (i && ((*i) & typeFlags)){
-				i = intLinkedHashListGet(&hl,len,prev);
-				if (!i){
-					i = intLinkedHashListNew(&hl,len,prev);
-					*i = 1;
-				} else {
-					(*i)++;
-				}
-			}
-		}
-	}
-	if (hl.used){
-		IntBucket *ib = MallocOrDie(hl.used*sizeof(*ib));
-		int i = 0;
-		for (intLinkedHashListBucket *b = hl.first; b; b = b->next){
-			ib[i].keylen = b->keylen;
-			ib[i].key = b->key;
-			ib[i].value = b->value;
-			i++;
-		}
-		qsort(ib,hl.used,sizeof(*ib),CompareIntBuckets);
-		
-		//we're ignoring top and case for now
-		//make new list sorted by aspect ratio
-		HDC hdcScreen = GetDC(NULL);
-		HDC hdcBmp = CreateCompatibleDC(hdcScreen);
-		HFONT hfont = CreateFontA(-24,0,0,0,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
-		HFONT oldFont = SelectObject(hdcBmp,hfont);
-		SetBkMode(hdcBmp,TRANSPARENT);
-		SetTextColor(hdcBmp,RGB(255,255,255));
-		wa->len = hl.used;
-		wa->words = MallocOrDie(hl.used*sizeof(*wa->words));
-		for (int i = 0; i < hl.used; i++){
-			wa->words[i].len = ib[i].keylen;
-			wa->words[i].ptr = ib[i].key;
-			RECT r = {0};
-			DrawTextA(hdcBmp,ib[i].key,ib[i].keylen,&r,DT_CALCRECT|DT_NOPREFIX);
-			wa->words[i].aspect = (float)r.right/r.bottom;
-		}
-		qsort(wa->words,hl.used,sizeof(*wa->words),CompareAspectWords);//the crt has bsearch too
-		for (int i = 0; i < hl.used; i++){
-			printf("%.*s: %f\n",wa->words[i].len,wa->words[i].ptr,wa->words[i].aspect);
-		}
-		SelectObject(hdcBmp,oldFont);
-		DeleteObject(hfont);
-		DeleteDC(hdcBmp);
-		ReleaseDC(NULL,hdcScreen);
+typedef float vec3[3];
 
-		free(ib);
-		free(hl.buckets);
-	}
-}
-void WordReconstruct(Image *img, ColorRectList *crl, WordArray *wa, char *fontName){
-	HDC hdcScreen = GetDC(NULL);
-	HDC hdcBmp = CreateCompatibleDC(hdcScreen);
-	BITMAPINFO_TRUECOLOR32 bmi = {0};
-	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bmi.bmiHeader.biWidth = img->width;
-	bmi.bmiHeader.biHeight = img->height;
-	bmi.bmiHeader.biPlanes = 1;
-	bmi.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS;
-	bmi.bmiHeader.biBitCount = 32;
-	bmi.bmiColors[0].rgbRed = 0xff;
-	bmi.bmiColors[1].rgbGreen = 0xff;
-	bmi.bmiColors[2].rgbBlue = 0xff;
-	uint32_t *pixels;
-	HBITMAP hbm = CreateDIBSection(hdcBmp,&bmi,DIB_RGB_COLORS,&pixels,0,0);
-	if (!hbm){
-		FatalErrorA("Failed to create %dx%d 32 bit bitmap.",img->width,img->height);
-	}
-	HBITMAP hbmOld = SelectObject(hdcBmp,hbm);
-	for (ColorRect *cr = crl->elements; cr < crl->elements+crl->used; cr++){
-		RECT r = {
-			.left = cr->rect.left,
-			.right = cr->rect.right,
-			.top = img->height-cr->rect.top,
-			.bottom = img->height-(cr->rect.bottom+1)
-		};
-		int w = r.right-r.left;
-		int h = r.bottom-r.top;
-		bool horizontal = w > h;
-		float aspect = horizontal ? (float)w/h : (float)h/w;
-		int subdivisions = 1;
-		//need to make random subdivisions if aspect is greater than biggest available aspect
-		//also words should be merged by aspect and then chosen at random.
-		float biggestAspect = wa->words[wa->len-1].aspect;
-		while (aspect > wa->words[wa->len-1].aspect){
-			if (horizontal){
-				w /= 2;
-			} else {
-				h /= 2;
-			}
-			aspect *= 0.5f;
-			subdivisions++;
-		}
-		AspectWord *word = wa->words+1;
-		for (; word < wa->words+wa->len; word++){
-			if (word->aspect > aspect){
-				word--;
-				break;
-			}
-		}
-		int angle = 90*10;
-		HFONT hfont = CreateFontA(horizontal ? -h : -w,0,horizontal ? 0 : angle,horizontal ? 0 : angle,FW_REGULAR,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FF_DONTCARE,fontName);
-		HFONT oldFont = SelectObject(hdcBmp,hfont);
-		SetBkMode(hdcBmp,TRANSPARENT);
-		SetTextColor(hdcBmp,cr->color&0xffffff);
-		ExtTextOutA(hdcBmp,r.left,horizontal ? r.top : r.bottom,0,0,word->ptr,word->len,0);
-		SelectObject(hdcBmp,oldFont);
-		DeleteObject(hfont);
-	}
+vec3 cube_verts[] = {
+	0,1,0, 0,0,0, 0,0,1, 0,0,1, 0,1,1, 0,1,0,
+	1,1,1, 1,0,1, 1,0,0, 1,0,0, 1,1,0, 1,1,1,
 
-	SelectObject(hdcBmp,hbmOld);
-	DeleteDC(hdcBmp);
-	ReleaseDC(NULL,hdcScreen);
-	for (size_t i = 0; i < img->width*img->height; i++){
-		uint8_t *p = pixels+i;
-		uint8_t s;
-		SWAP(s,p[0],p[2]);
-		p[3] = 255;//max(p[0],max(p[1],p[2]));
-	}
-	memcpy(img->pixels,pixels,img->width*img->height*sizeof(*img->pixels));
-	DeleteObject(hbm);
-}
-void Update(){
-	size_t size = images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels);
-	memcpy(images[1].image.pixels,images[0].image.pixels,size);
-	if (greyscale){
-		GreyScale(&images[1].image);
-	}
-	GaussianBlur(&images[1].image,gaussianBlurStrength);
-	memcpy(images[2].image.pixels,images[1].image.pixels,size);
-	Quantize(&images[2].image,quantizeDivisions);
-	memcpy(images[3].image.pixels,images[2].image.pixels,size);
+	0,0,0, 1,0,0, 1,0,1, 1,0,1, 0,0,1, 0,0,0,
+	1,1,0, 0,1,0, 0,1,1, 0,1,1, 1,1,1, 1,1,0,
 
-	ColorRectList crl = {0};
-	RectangleDecompose(&crl,&images[3].image,rectangleDecomposeMinDim);
-
-	if (gtext.ptr){
-		WordArray wa;
-		WordsByAspect(&wa,&gtext,NOUN|VERB,0,"Consolas",LOWER_CASE);
-		WordReconstruct(&images[4].image,&crl,&wa,"Consolas");
-		if (wa.len){
-			free(wa.words);
-		}
-	}
-
-	for (ImageTexture *it = images; it < images+COUNT(images); it++){
-		TextureFromImage(&it->texture,&it->image,false);
-	}
-}
-
-typedef struct {
-	int x, y, halfWidth, halfHeight, roundingRadius;
-	uint32_t color, IconColor;
-	WCHAR *string;
-	void (*func)(void);
-} Button;
-void OpenImage(){
-	IFileDialog *pfd;
-	IShellItem *psi;
-	PWSTR path = 0;
-	COMDLG_FILTERSPEC fs = {L"Image files", L"*.png;*.jpg;*.jpeg"};
-	if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog,0,CLSCTX_INPROC_SERVER,&IID_IFileOpenDialog,&pfd))){
-		pfd->lpVtbl->SetFileTypes(pfd,1,&fs); 
-		pfd->lpVtbl->SetTitle(pfd,L"Open Image");
-		pfd->lpVtbl->Show(pfd,gwnd);
-		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
-			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
-				for (ImageTexture *it = images; it < images+COUNT(images); it++){
-					free(it->image.pixels);
-				}
-				LoadImageFromFile(&images[0].image,path,true);
-				for (int i = 1; i < COUNT(images); i++){
-					images[i].image.width = images[0].image.width;
-					images[i].image.height = images[0].image.height;
-					images[i].image.pixels = MallocOrDie(images[0].image.width*images[0].image.height*sizeof(*images[0].image.pixels));
-				}
-				Update();
-				wcscpy(imagePath,path);
-				imagePathLen = wcslen(imagePath);
-				InvalidateRect(gwnd,0,0);
-				CoTaskMemFree(path);
-			}
-			psi->lpVtbl->Release(psi);
-		}
-		pfd->lpVtbl->Release(pfd);
-	}
-}
-void OpenText(){
-	IFileDialog *pfd;
-	IShellItem *psi;
-	PWSTR path = 0;
-	COMDLG_FILTERSPEC fs = {L"Text files", L"*.txt;"};
-	if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog,0,CLSCTX_INPROC_SERVER,&IID_IFileOpenDialog,&pfd))){
-		pfd->lpVtbl->SetFileTypes(pfd,1,&fs); 
-		pfd->lpVtbl->SetTitle(pfd,L"Open Text");
-		pfd->lpVtbl->Show(pfd,gwnd);
-		if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
-			if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
-				if (gtext.ptr) free(gtext.ptr);
-				gtext.ptr = LoadFileW(path,&gtext.len);
-				wcscpy(textPath,path);
-				textPathLen = wcslen(textPath);
-				Update();
-				InvalidateRect(gwnd,0,0);
-				CoTaskMemFree(path);
-			}
-			psi->lpVtbl->Release(psi);
-		}
-		pfd->lpVtbl->Release(pfd);
-	}
-}
-void ToggleGreyscale();
-void IncrementGaussianBlurStrength(){
-	gaussianBlurStrength = min(50,gaussianBlurStrength+1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void DecrementGaussianBlurStrength(){
-	gaussianBlurStrength = max(0,gaussianBlurStrength-1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void IncrementQuantizeDivisions(){
-	quantizeDivisions = min(50,quantizeDivisions+1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void DecrementQuantizeDivisions(){
-	quantizeDivisions = max(0,quantizeDivisions-1);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void IncrementMinDim(){
-	rectangleDecomposeMinDim = min(2000,rectangleDecomposeMinDim+5);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-void DecrementMinDim(){
-	rectangleDecomposeMinDim = max(0,rectangleDecomposeMinDim-5);
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-Button buttons[] = {
-	{50,-14,46,10,10,0x7B9944 | (RR_DISH<<24),RGBA(0,0,0,RR_ICON_NONE),L"Open Image",OpenImage},
-	{50,-14-26*1,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Open Text",OpenText},
-	{50,-14-26*2,46,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"Greyscale: Off",ToggleGreyscale},
-	{14,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementGaussianBlurStrength},{200,-14-26*3,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementGaussianBlurStrength},
-	{14,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementQuantizeDivisions},{200,-14-26*4,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementQuantizeDivisions},
-	{14,-14-26*5,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"-",DecrementMinDim},{200,-14-26*5,10,10,10,RGBA(127,127,127,RR_DISH),RGBA(0,0,0,RR_ICON_NONE),L"+",IncrementMinDim},
+	1,1,0, 1,0,0, 0,0,0, 0,0,0, 0,1,0, 1,1,0,
+	0,1,1, 0,0,1, 1,0,1, 1,0,1, 1,1,1, 0,1,1,
 };
-void ToggleGreyscale(){
-	greyscale = !greyscale;
-	buttons[2].string = greyscale ? L"Greyscale: On" : L"Greyscale: Off";
-	Update();
-	InvalidateRect(gwnd,0,0);
-}
-bool PointInButton(int buttonX, int buttonY, int halfWidth, int halfHeight, int x, int y){
-	return abs(x-buttonX) < halfWidth && abs(y-buttonY) < halfHeight;
-}*/
 
-typedef struct {
-	BITMAPINFOHEADER    bmiHeader;
-	RGBQUAD             bmiColors[4];
-} BITMAPINFO_TRUECOLOR32;
+void DrawCube(){
+	glBegin(GL_TRIANGLES);
+	for (int i = 0; i < 6; i++){
+		vec3 *face = cube_verts+i*6;
+		glTexCoord2f(0,1);
+		glVertex3fv((GLfloat *)(face+0));
+		glTexCoord2f(0,0);
+		glVertex3fv((GLfloat *)(face+1));
+		glTexCoord2f(1,0);
+		glVertex3fv((GLfloat *)(face+2));
 
-typedef struct {
-	int width, height;
-	Color *pixels;
-	HDC hdcBmp;
-	HBITMAP hbmOld, hbm;
-	HFONT fontOld;
-} GdiImage;
-
-void GdiImageNew(GdiImage *img, int width, int height){
-	img->width = width;
-	img->height = height;
-	HDC hdcScreen = GetDC(0);
-	img->hdcBmp = CreateCompatibleDC(hdcScreen);
-	ReleaseDC(0,hdcScreen);
-	BITMAPINFO_TRUECOLOR32 bmi = {
-		.bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
-		.bmiHeader.biWidth = width,
-		.bmiHeader.biHeight = height,
-		.bmiHeader.biPlanes = 1,
-		.bmiHeader.biCompression = BI_RGB | BI_BITFIELDS,
-		.bmiHeader.biBitCount = 32,
-		.bmiColors[0].rgbRed = 0xff,
-		.bmiColors[1].rgbGreen = 0xff,
-		.bmiColors[2].rgbBlue = 0xff,
-	};
-	img->hbm = CreateDIBSection(img->hdcBmp,&bmi,DIB_RGB_COLORS,&img->pixels,0,0);
-	ASSERT(img->hbm);
-	img->hbmOld = SelectObject(img->hdcBmp,img->hbm);
-
-	img->fontOld = 0;
-}
-
-void GdiImageDestroy(GdiImage *img){
-	if (img->fontOld){
-		SelectObject(img->hdcBmp,img->fontOld);
+		glTexCoord2f(1,0);
+		glVertex3fv((GLfloat *)(face+3));
+		glTexCoord2f(1,1);
+		glVertex3fv((GLfloat *)(face+4));
+		glTexCoord2f(0,1);
+		glVertex3fv((GLfloat *)(face+5));
 	}
-	SelectObject(img->hdcBmp,img->hbmOld);
-	DeleteDC(img->hdcBmp);
-	DeleteObject(img->hbm);
-	memset(img,0,sizeof(*img));
-}
-
-void GdiImageSetFont(GdiImage *img, HFONT font){
-	HFONT old = SelectObject(img->hdcBmp,font);
-	if (!img->fontOld){
-		img->fontOld = old;
-	}
-	SetBkMode(img->hdcBmp,TRANSPARENT);
-}
-
-void GdiImageSetFontColor(GdiImage *img, uint32_t color){
-	SetTextColor(img->hdcBmp,color & 0xffffff);
-}
-
-void GdiImageDrawText(GdiImage *img, WCHAR *str, int x, int y){
-	ExtTextOutW(img->hdcBmp,x,y,0,0,str,wcslen(str),0);
-}
-
-void GdiImageTextDimensions(GdiImage *img, WCHAR *str, int *width, int *height){
-	RECT r = {0};
-	DrawTextW(img->hdcBmp,str,wcslen(str),&r,DT_CALCRECT|DT_NOPREFIX);
-	*width = r.right-r.left;
-	*height = r.bottom-r.top;
-}
-
-HFONT GetUserChosenFont(){
-	LOGFONTW lf;
-	CHOOSEFONTW cf = {
-		.lStructSize = sizeof(cf),
-		.lpLogFont = &lf,
-		.Flags = CF_INITTOLOGFONTSTRUCT,
-	};
-	ASSERT(ChooseFontW(&cf));
-	return CreateFontIndirectW(&lf);
-}
-
-HFONT GetSystemUiFont(){
-	NONCLIENTMETRICSW ncm = {
-		.cbSize = sizeof(ncm)
-	};
-	SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,sizeof(ncm),&ncm,0);
-	return CreateFontIndirectW(&ncm.lfCaptionFont);
+	glEnd();
 }
 
 HFONT sysUiFont;
 
+Texture cobble;
+
 int uiY = 0;
-GdiImage uiText;
+GdiImage uiImage;
+typedef struct {
+	WCHAR *str;
+	int x, y;
+} DrawTextCommand;
+typedef struct {
+	int total, used;
+	DrawTextCommand *elements;
+} DrawTextCommandList;
+DrawTextCommand *DrawTextCommandListMakeRoom(DrawTextCommandList *list, int count){
+	if (list->used+count > list->total){
+		if (!list->total) list->total = 1;
+		while (list->used+count > list->total) list->total *= 2;
+		list->elements = ReallocOrDie(list->elements,list->total*sizeof(*list->elements));
+	}
+	list->used += count;
+	return list->elements+list->used-count;
+}
+DrawTextCommandList uiCmdList;
+void PushUiText(WCHAR *str, int x, int y){
+	DrawTextCommand *dtc = DrawTextCommandListMakeRoom(&uiCmdList,1);
+	dtc->str = str;
+	dtc->x = x;
+	dtc->y = y;
+}
 POINT cursorPos;
 bool buttonHovered;
 bool justClicked;
+bool openImageClicked;
 void BeginUi(){
-	GdiImageNew(&uiText,clientWidth,clientHeight);
-	GdiImageSetFont(&uiText,sysUiFont);
-	GdiImageSetFontColor(&uiText,RGB(255,255,255));
+	GdiImageNew(&uiImage,clientWidth,clientHeight);
+	GdiImageSetFont(&uiImage,sysUiFont);
+	GdiImageSetFontColor(&uiImage,RGB(255,255,255));
 
 	GetCursorPos(&cursorPos);
 	ScreenToClient(gwnd,&cursorPos);
@@ -915,81 +671,29 @@ void BeginUi(){
 
 	uiY = 1;
 }
-void EndUi(){
-	Image img = {
-		.width = uiText.width,
-		.height = uiText.height,
-		.pixels = uiText.pixels
-	};
-	for (Color *p = img.pixels; p < img.pixels+img.width*img.height; p++){
-		if (p[0][0]){
-			p[0][3] = 0xff;
-		}
-	}
-	Texture tex = {0};
-	TextureFromImage(&tex,&img,false);
-
-	glEnable(GL_TEXTURE_2D);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-	glBindTexture(GL_TEXTURE_2D,tex.id);
-
-	glBegin(GL_TRIANGLES);
-
-	glTexCoord2f(0,1);
-	glVertex3f(0,0,1);
-	glTexCoord2f(0,0);
-	glVertex3f(0,clientHeight,1);
-	glTexCoord2f(1,0);
-	glVertex3f(clientWidth,clientHeight,1);
-
-	glTexCoord2f(1,0);
-	glVertex3f(clientWidth,clientHeight,1);
-	glTexCoord2f(1,1);
-	glVertex3f(clientWidth,0,1);
-	glTexCoord2f(0,1);
-	glVertex3f(0,0,1);
-
-	glEnd();
-
-	glDisable(GL_TEXTURE_2D);
-
-	DestroyTexture(&tex);
-	GdiImageDestroy(&uiText);
-
-	if (buttonHovered){
-		SetCursor(cursorFinger);
-	} else {
-		RECT cr;
-		GetClientRect(gwnd,&cr);
-		if (PtInRect(&cr,cursorPos)){
-			SetCursor(cursorArrow);
-		}
-	}
-
-	justClicked = false;
-}
-bool Button(char *name){
+bool Button(WCHAR *name){
 	int width, height;
-	GdiImageTextDimensions(&uiText,name,&width,&height);
+	GdiImageTextDimensions(&uiImage,name,&width,&height);
 	width += 9;
 	height += 5;
-	GdiImageDrawText(&uiText,name,4,uiY+2);
+
+	PushUiText(name,4,uiY+2);
 
 	glBegin(GL_TRIANGLES);
 
 	glColor3f(1,0,0);
-	glVertex3f(0,uiY,0);
+	glVertex3f(0,(float)uiY,0);
 	glColor3f(0,1,0);
-	glVertex3f(0,uiY+height,0);
+	glVertex3f(0,(float)uiY+(float)height,0);
 	glColor3f(0,0,1);
-	glVertex3f(width,uiY+height,0);
+	glVertex3f((float)width,(float)uiY+(float)height,0);
 	
 	glColor3f(0,0,1);
-	glVertex3f(width,uiY+height,0);
+	glVertex3f((float)width,(float)uiY+(float)height,0);
 	glColor3f(0,1,0);
-	glVertex3f(width,uiY,0);
+	glVertex3f((float)width,(float)uiY,0);
 	glColor3f(1,0,0);
-	glVertex3f(0,uiY,0);
+	glVertex3f(0,(float)uiY,0);
 
 	glEnd();
 
@@ -1004,21 +708,21 @@ bool Button(char *name){
 		float hi[] = {1,1,1};
 		float lo[] = {0.5,0.5,0.5};
 		glColor3fv(hi);
-		glVertex3f(1,uiY,1);
+		glVertex3f(1,(float)uiY,1);
 		glColor3fv(lo);
-		glVertex3f(1,uiY+height,1);
+		glVertex3f(1,(float)uiY+(float)height,1);
 		glColor3fv(lo);
-		glVertex3f(1,uiY+height,1);
+		glVertex3f(1,(float)uiY+(float)height,1);
 		glColor3fv(lo);
-		glVertex3f(width,uiY+height,1);
+		glVertex3f((float)width,(float)uiY+(float)height,1);
 		glColor3fv(lo);
-		glVertex3f(width,uiY+height,1);
+		glVertex3f((float)width,(float)uiY+(float)height,1);
 		glColor3fv(hi);
-		glVertex3f(width,uiY,0);
+		glVertex3f((float)width,(float)uiY,0);
 		glColor3fv(hi);
-		glVertex3f(width,uiY,0);
+		glVertex3f((float)width,(float)uiY,0);
 		glColor3fv(hi);
-		glVertex3f(0,uiY,1);
+		glVertex3f(0,(float)uiY,1);
 
 		glEnd();
 	}
@@ -1026,6 +730,77 @@ bool Button(char *name){
 	uiY += height + 4;
 
 	return thisButtonHovered && justClicked;
+}
+typedef struct {float arr[16];} mat4;
+mat4 mat4Persp(float fovRadians, float aspectRatio, float near, float far){
+	float s = 1.0f / tanf(fovRadians * 0.5f);
+	float d = near - far;
+	return (mat4){
+		s/aspectRatio,0,0,0,
+		0,s,0,0,
+		0,0,(far+near)/d,-1,
+		0,0,(2*far*near)/d,0
+	};
+}
+void EndUi(){
+	glEnable(GL_TEXTURE_2D);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+	glBindTexture(GL_TEXTURE_2D,cobble.id);
+	glPushMatrix();
+	glLoadMatrixf(mat4Persp(0.5f*(float)M_PI,(float)clientWidth/(float)clientHeight,0.01f,100.0f).arr);
+	glTranslatef(0,0,-5);
+	static float degrees = 0.0f;
+	degrees += 1.0f;
+	glRotatef(degrees,1.0f,1.0f,0.0f);
+	glScalef(2.0f,2.0f,2.0f);
+	glTranslatef(-0.5f,-0.5f,-0.5f);
+	DrawCube();
+	glPopMatrix();
+
+	PushUiText(L"bruh",clientWidth/2,clientHeight/2-20);
+
+	glReadPixels(0,0,clientWidth,clientHeight,GL_RGBA,GL_UNSIGNED_BYTE,(GLvoid *)uiImage.pixels);
+	for (DrawTextCommand *cmd = uiCmdList.elements; cmd < uiCmdList.elements+uiCmdList.used; cmd++){
+		GdiImageDrawText(&uiImage,cmd->str,cmd->x,cmd->y);
+	}
+	GdiFlush();
+	for (Color *p = uiImage.pixels; p < uiImage.pixels+uiImage.width*uiImage.height; p++){
+		p[0][3] = 0xff;
+	}
+	Texture tex = {0};
+	TextureFromGdiImage(&tex,&uiImage,false);
+
+	glBindTexture(GL_TEXTURE_2D,tex.id);
+
+	glBegin(GL_TRIANGLES);
+
+	glTexCoord2f(0,1);
+	glVertex3f(0,0,1);
+	glTexCoord2f(0,0);
+	glVertex3f(0,(float)clientHeight,1);
+	glTexCoord2f(1,0);
+	glVertex3f((float)clientWidth,(float)clientHeight,1);
+
+	glTexCoord2f(1,0);
+	glVertex3f((float)clientWidth,(float)clientHeight,1);
+	glTexCoord2f(1,1);
+	glVertex3f((float)clientWidth,0,1);
+	glTexCoord2f(0,1);
+	glVertex3f(0,0,1);
+
+	glEnd();
+
+	glDisable(GL_TEXTURE_2D);
+
+	DestroyTexture(&tex);
+	GdiImageDestroy(&uiImage);
+	if (uiCmdList.elements){
+		free(uiCmdList.elements);
+		memset(&uiCmdList,0,sizeof(uiCmdList));
+	}
+
+	justClicked = false;
 }
 
 LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
@@ -1089,16 +864,6 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			}
 			return 0;
 		}
-		case WM_DROPFILES:{
-			WCHAR p[MAX_PATH];
-			if (DragQueryFileW(wParam,0xFFFFFFFF,0,0) > 1) goto EXIT_DROPFILES;
-			DragQueryFileW(wParam,0,p,COUNT(p));
-			//LoadImg(p);
-		EXIT_DROPFILES:
-			DragFinish(wParam);
-			InvalidateRect(hwnd,0,0);
-			return 0;
-		}
 		case WM_LBUTTONUP:{
 			pan = false;
 			justClicked = true;
@@ -1121,8 +886,8 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 				GetCursorPos(&pt);
 				ScreenToClient(hwnd,&pt);
 				pt.y = clientHeight - pt.y - 1;
-				pt.x -= pos[0];
-				pt.y -= pos[1];
+				pt.x -= (LONG)pos[0];
+				pt.y -= (LONG)pos[1];
 				if (scale > oldScale){
 					pos[0] -= pt.x / (float)(scale-1);
 					pos[1] -= pt.y / (float)(scale-1);
@@ -1151,7 +916,10 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 
 			BeginUi();
 			if (Button(L"Open Image")){
-				printf("Open Image\n");
+				openImageClicked = true;
+				ValidateRect(hwnd,0);
+				//this scheme is required because the open file dialogs bug the hell
+				//out if the main window keeps trying to repaint itself.
 			}
 			if (Button(L"Open Text")){
 				printf("Open Text\n");
@@ -1159,6 +927,7 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 			EndUi();
 
 			SwapBuffers(hdc);
+
 			return 0;
 		}
 	}
@@ -1209,12 +978,6 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 		0);
 	ASSERT(hwnd);
 
-	DWORD darkTitlebar = 1;
-	int DwmwaUseImmersiveDarkMode = 20,
-		DwmwaUseImmersiveDarkModeBefore20h1 = 19;
-	SUCCEEDED(DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, &darkTitlebar, sizeof(darkTitlebar))) ||
-		SUCCEEDED(DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20h1, &darkTitlebar, sizeof(darkTitlebar)));
-
 	hdc = GetDC(hwnd);
 	ASSERT(hdc);
 
@@ -1250,6 +1013,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 		//LoadImg(argv[1]);
 	}
 
+	TextureFromFile(&cobble,L"cobble.png",false);
+
 	sysUiFont = GetSystemUiFont();
 
 	ShowWindow(hwnd,SW_SHOW);
@@ -1258,6 +1023,28 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int n
 	while (GetMessageW(&msg,0,0,0)){
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
+		if (openImageClicked){
+			openImageClicked = false;
+
+			IFileDialog *pfd;
+			IShellItem *psi;
+			PWSTR path = 0;
+			COMDLG_FILTERSPEC fs = {L"Image files", L"*.png;*.jpg;*.jpeg"};
+			ASSERT(SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog,0,CLSCTX_ALL,&IID_IFileOpenDialog,&pfd)));
+			pfd->lpVtbl->SetFileTypes(pfd,1,&fs); 
+			pfd->lpVtbl->SetTitle(pfd,L"Open Image");
+			pfd->lpVtbl->Show(pfd,hwnd);
+			if (SUCCEEDED(pfd->lpVtbl->GetResult(pfd,&psi))){
+				if (SUCCEEDED(psi->lpVtbl->GetDisplayName(psi,SIGDN_FILESYSPATH,&path))){
+
+					CoTaskMemFree(path);
+				}
+				psi->lpVtbl->Release(psi);
+			}
+			pfd->lpVtbl->Release(pfd);
+
+			InvalidateRect(hwnd,0,false);
+		}
 	}
 
 	CoUninitialize();
