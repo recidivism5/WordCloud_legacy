@@ -65,7 +65,7 @@ void FatalErrorA(char *format, ...){
 	OutputDebugStringA(msg);
 	__debugbreak();
 #else
-	MessageBoxA(0,msg,"Error",MB_ICONEXCLAMATION);
+	MessageBoxA(0,msg,"Error",MB_ICONERROR);
 #endif
 	va_end(args);
 	exit(1);
@@ -79,7 +79,7 @@ void FatalErrorW(WCHAR *format, ...){
 	OutputDebugStringW(msg);
 	__debugbreak();
 #else
-	MessageBoxW(0,msg,L"Error",MB_ICONEXCLAMATION);
+	MessageBoxW(0,msg,L"Error",MB_ICONERROR);
 #endif
 	va_end(args);
 	exit(1);
