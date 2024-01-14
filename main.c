@@ -903,6 +903,7 @@ int uiY = 0;
 GdiImage uiText;
 POINT cursorPos;
 bool buttonHovered;
+bool justClicked;
 void BeginUi(){
 	GdiImageNew(&uiText,clientWidth,clientHeight);
 	GdiImageSetFont(&uiText,sysUiFont);
@@ -964,6 +965,8 @@ void EndUi(){
 			SetCursor(cursorArrow);
 		}
 	}
+
+	justClicked = false;
 }
 bool Button(char *name){
 	int width, height;
@@ -991,8 +994,10 @@ bool Button(char *name){
 	glEnd();
 
 	RECT r = {0,uiY,width,uiY+height};
+	bool thisButtonHovered = false;
 	if (PtInRect(&r,cursorPos)){
 		buttonHovered = true;
+		thisButtonHovered = true;
 
 		glBegin(GL_LINES);
 
@@ -1019,6 +1024,8 @@ bool Button(char *name){
 	}
 
 	uiY += height + 4;
+
+	return thisButtonHovered && justClicked;
 }
 
 LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
@@ -1094,6 +1101,7 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		}
 		case WM_LBUTTONUP:{
 			pan = false;
+			justClicked = true;
 			return 0;
 		}
 		case WM_CHAR:{
@@ -1143,10 +1151,10 @@ LRESULT WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 
 			BeginUi();
 			if (Button(L"Open Image")){
-				
+				printf("Open Image\n");
 			}
 			if (Button(L"Open Text")){
-			
+				printf("Open Text\n");
 			}
 			EndUi();
 
